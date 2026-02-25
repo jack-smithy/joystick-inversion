@@ -1,0 +1,28 @@
+[project]
+name = "joystick-inversion"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Jack Smith", email = "jacksmith2000@me.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "lightgbm>=4.6.0",
+    "magpylib>=5.2.2",
+    "numpy>=2.4.2",
+    "pandas>=3.0.1",
+    "scikit-learn>=1.8.0",
+]
+
+[project.scripts]
+joystick-inversion = "joystick_inversion:main"
+
+[build-system]
+requires = ["uv_build>=0.9.5,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.2.0",
+]
