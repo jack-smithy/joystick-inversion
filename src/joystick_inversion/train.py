@@ -69,9 +69,6 @@ def train_angle(
 
     X = data[["Bx", "By", "Bz"]]
     y = data["angle"]
-    print(X.shape, y.shape)
-
-    # model = MultiOutputRegressor(model)  # type: ignore
 
     X_train, X_val, y_train, y_val = train_test_split(
         X,
@@ -81,15 +78,6 @@ def train_angle(
         random_state=42,
     )
 
-    print(y_train)
-
     model = model.fit(X_train, y_train)
 
-    y_pred = model.predict(X_val)
-
-    # y_pred_unprocessed = unprocess_angle(y_pred)
-
-    # print(y_val)
-    # y_val_unprocessed = unprocess_angle(y_val)
-
-    return model, y_pred, y_val
+    return model

@@ -14,4 +14,4 @@ def main() -> None:
 
     tilt_model = train_tilt(data=df, model=LGBMClassifier(random_state=42))
 
-    angle_model, y_pred, y_true = train_angle(data=df, model=LGBMClassifier(random_state=42))
+    angle_model = train_angle(data=df, model=LGBMClassifier(random_state=42))
