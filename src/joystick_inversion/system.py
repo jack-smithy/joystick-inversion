@@ -2,14 +2,10 @@ import magpylib as magpy
 import numpy as np
 import pandas as pd
 
-from joystick_inversion.parameters import (
-    magnetization_factory,
-    parameter_factory,
-    calibration_values,
-)
+from joystick_inversion.parameters import parameter_factory
 
 
-def direction_from_index(index, M):
+def direction_from_index(index: int, M: float) -> tuple:
     """
     Index from optimization procedure for joystick design mapped to vector representing
     the magnetization
@@ -124,8 +120,6 @@ def setup_sensor(parameters: np.ndarray, two_sensors: bool = False) -> magpy.Sen
         start=0,  # type: ignore
     )
 
-    # sensors = [sensor_1]
-
     # if two_sensors:
     #     sensor_2 = magpy.Sensor(
     #         position=(sensor_2_x, sensor_2_y, sensor_2_z),
@@ -138,8 +132,6 @@ def setup_sensor(parameters: np.ndarray, two_sensors: bool = False) -> magpy.Sen
     #         anchor=(sensor_2_x, sensor_2_y, sensor_2_z),
     #         start=0,  # type: ignore
     #     )
-
-    #     sensors.append(sensor_2)
 
     return sensor_1
 
@@ -155,14 +147,14 @@ def make_sensor_readings(
     angles = np.tile(angles, 6)
 
     # spinny spinny
-    magnets.rotate_from_angax(angle=angles, axis="z", anchor=(0, 0, 0), start=0)  # type: ignore
+    magnets.rotate_from_angax(angle=angles, axis="z", anchor=(0, 0, 0), start=0)
 
     # 0. south
     magnets.rotate_from_angax(
         angle=parameters[22],
         axis="x",
         anchor=(0, 0, 0),
-        start=n_steps * 0,  # type: ignore
+        start=n_steps * 0,
     )
 
     # 1. north
@@ -170,7 +162,7 @@ def make_sensor_readings(
         angle=-parameters[23] * 2,
         axis="x",
         anchor=(0, 0, 0),
-        start=n_steps * 1,  # type: ignore
+        start=n_steps * 1,
     )
 
     # 2. east (through ground state)
@@ -178,12 +170,12 @@ def make_sensor_readings(
         angle=parameters[24],
         axis="x",
         anchor=(0, 0, 0),
-        start=n_steps * 2,  # type: ignore
+        start=n_steps * 2,
     ).rotate_from_angax(
         angle=parameters[24],
         axis="y",
         anchor=(0, 0, 0),
-        start=n_steps * 2,  # type: ignore
+        start=n_steps * 2,
     )
 
     # 3. west
@@ -191,7 +183,7 @@ def make_sensor_readings(
         angle=-parameters[25] * 2,
         axis="y",
         anchor=(0, 0, 0),
-        start=n_steps * 3,  # type: ignore
+        start=n_steps * 3,
     )
 
     # 4. ground
@@ -199,13 +191,13 @@ def make_sensor_readings(
         angle=parameters[25],
         axis="y",
         anchor=(0, 0, 0),
-        start=n_steps * 4,  # type: ignore
+        start=n_steps * 4,
     )
 
     # 5. push
     magnets.move(
         displacement=(0, 0, -2e-3),
-        start=n_steps * 5,  # type: ignore
+        start=n_steps * 5,
     )
 
     B = magnets.getB(sensors)
@@ -228,35 +220,46 @@ def make_positions(n_simulations: int, n_steps: int = 24):
     return states, angles
 
 
-def make_dataset(n_simulations):
-    calibration = calibration_values()
-    parameters = parameter_factory(calibration=calibration)
-    magnetizations = magnetization_factory()
-
-    sensor = setup_sensor(parameters=parameters)
-
+def make_dataset(
+    n_simulations,
+    calibration,
+    magnetizations,
+    n_steps: int = 24,
+    seed: int | None = None,
+) -> pd.DataFrame:
     Bxi, Byi, Bzi = [], [], []
-    for _ in range(n_simulations):
+    for i in range(n_simulations):
+        generator = None
+        if seed is not None:
+            generator = np.random.default_rng(seed=seed + i)
+
+        params = parameter_factory(calibration=calibration, generator=generator)
+
+        sensor = setup_sensor(parameters=params)
         magnets = setup_magnets(
-            parameters=parameters,
+            parameters=params,
             magnetizations=magnetizations,
         )
 
         bx, by, bz = make_sensor_readings(
             magnets=magnets,
             sensors=sensor,
-            parameters=parameters,
+            parameters=params,
+            n_steps=n_steps,
         ).T
 
         Bxi.append(bx)
         Byi.append(by)
         Bzi.append(bz)
 
-    Bx = np.concat(Bxi)
-    By = np.concat(Byi)
-    Bz = np.concat(Bzi)
+    Bx = np.concatenate(Bxi)
+    By = np.concatenate(Byi)
+    Bz = np.concatenate(Bzi)
 
-    states, angles = make_positions(n_simulations=n_simulations)
+    states, angles = make_positions(
+        n_simulations=n_simulations,
+        n_steps=n_steps,
+    )
 
     dataset = {
         "Bx": Bx,

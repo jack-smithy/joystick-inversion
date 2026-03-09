@@ -10,9 +10,12 @@ requires-python = ">=3.13"
 dependencies = [
     "lightgbm>=4.6.0",
     "magpylib>=5.2.2",
+    "matplotlib>=3.10.8",
     "numpy>=2.4.2",
     "pandas>=3.0.1",
+    "pandas-stubs>=3.0.0.260204",
     "scikit-learn>=1.8.0",
+    "scikit-learn-stubs>=0.0.3",
 ]
 
 [project.scripts]
@@ -25,4 +28,13 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "ipykernel>=7.2.0",
+    "ruff>=0.15.2",
+    "ty>=0.0.18",
 ]
+
+[tool.ruff.lint]
+ignore = ["E731", "F541"]
+
+
+[tool.ty.rules]
+unused-type-ignore-comment = "ignore"

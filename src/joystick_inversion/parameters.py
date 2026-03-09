@@ -1,15 +1,23 @@
 import numpy as np
 
 
-def parameter_factory(calibration: np.ndarray | None = None) -> np.ndarray:
+def parameter_factory(
+    calibration: np.ndarray | None = None,
+    *,
+    generator: np.random.Generator | None = None,
+) -> np.ndarray:
     """
     Create the system parameters for magnet and sensor locations and orientations
     This vector is obtained from a joystick design optimization routine, it includes positions and orientations for the 4 magnets as well as positions of the 2 sensors. The sensor orientations are not obtained, but predefined for fabrication reasons
 
     0.0162 + 0.0056
 
+    Args:
+        calibration (np.ndarray | None, optional): _description_. Defaults to None.
+        uncertainty (bool): whether to add uncertainty to the parameters
+
     Returns:
-        np.ndarray: parameter vector
+        np.ndarray: _description_
     """
     x = np.zeros((27,))
     # ------------------------------------------------
@@ -59,10 +67,43 @@ def parameter_factory(calibration: np.ndarray | None = None) -> np.ndarray:
         x[24] += calibration[7]
         x[25] += calibration[8]
 
+    if generator is not None:
+        # add uncertainty to positions
+        position_uncertainty_scale = 1e-4  # 0.1mm
+
+        # magnet positions
+        x[:8] += generator.normal(
+            loc=0,
+            scale=position_uncertainty_scale,
+            size=(8,),
+        )
+
+        # sensor positions
+        x[8:14] += generator.normal(
+            loc=0,
+            scale=position_uncertainty_scale,
+            size=(6,),
+        )
+
+        angle_uncertainty_scale = 0.1  # 1deg
+
+        # magnet angles
+        x[14:18] += generator.normal(
+            loc=0,
+            scale=angle_uncertainty_scale,
+            size=(4,),
+        )
+
+        x[20:22] += generator.normal(
+            loc=0,
+            scale=angle_uncertainty_scale,
+            size=(2,),
+        )
+
     return x
 
 
-def magnetization_factory() -> np.ndarray:
+def magnetization_values() -> np.ndarray:
     return np.asarray((1.2124, 1.204, 1.208, 1.196))
 
 
