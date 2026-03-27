@@ -48,3 +48,17 @@ for some extra tooling. I like to usually use `ruff` as a linter and `ty` as a t
 ```bash
 uvx ruff check && uvx ty check
 ```
+
+## Running the training script
+
+To train and validate on synthetic data, and test on real data, use
+
+```bash
+python run.py
+```
+
+or
+
+```bash
+uv run run.py
+```

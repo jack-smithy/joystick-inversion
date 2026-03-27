@@ -5,22 +5,6 @@ import pandas as pd
 from parameters import parameter_factory
 from utils import timed
 
-DIRECTIONS = [
-    "north",
-    "south",
-    "east",
-    "west",
-    "zero",
-]
-
-DIRECTION_MAP = {
-    "south": 0,
-    "north": 1,
-    "east": 2,
-    "west": 3,
-    "zero": 4,
-}
-
 
 def direction_from_index(index: int, M: float) -> tuple:
     """

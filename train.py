@@ -8,7 +8,7 @@ from sklearn.metrics import classification_report, mean_absolute_error
 from sklearn.model_selection import train_test_split
 from sklearn.multioutput import MultiOutputRegressor
 
-from system import DIRECTION_MAP, DIRECTIONS
+from constants import DIRECTIONS
 from utils import timed
 
 
@@ -93,5 +93,29 @@ def train_angle(
 
     dy = cosine_similarity(y_pred=y_pred, y_true=y_val)  # ty: ignore
     print(f"\n Mean angular error: {dy:.5f}deg\n")
+
+    return model
+
+
+def val_angle(df: pd.DataFrame, model: MultiOutputRegressor):
+    X, y = filter(df=df, col="angle")
+    y = process_angle(y=y)
+
+    y_pred = model.predict(X)
+
+    dy = cosine_similarity(y_true=y, y_pred=y_pred)  # ty: ignore
+    print(f"\n Mean angular error: {dy:.5f}deg\n")
+
+    return model
+
+
+def val_tilt(df: pd.DataFrame, model: LGBMClassifier) -> LGBMClassifier:
+
+    X, y = filter(df=df, col="tilt")
+
+    y_pred = model.predict(X)
+    res = classification_report(y_true=y, y_pred=y_pred, target_names=DIRECTIONS)
+
+    print(res)
 
     return model
