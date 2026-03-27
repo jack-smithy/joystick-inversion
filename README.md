@@ -5,7 +5,7 @@
 Clone the repository
 
 ```bash
-git clone <thingy>
+git clone <this repo or your fork>
 ```
 
 ### With pip
