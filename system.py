@@ -2,7 +2,7 @@ import magpylib as magpy
 import numpy as np
 import pandas as pd
 
-from joystick_inversion.parameters import parameter_factory
+from parameters import parameter_factory
 
 
 def direction_from_index(index: int, M: float) -> tuple:

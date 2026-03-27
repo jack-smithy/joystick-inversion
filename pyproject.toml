@@ -18,9 +18,6 @@ dependencies = [
     "scikit-learn-stubs>=0.0.3",
 ]
 
-[project.scripts]
-joystick-inversion = "joystick_inversion:main"
-
 [build-system]
 requires = ["uv_build>=0.9.5,<0.10.0"]
 build-backend = "uv_build"
@@ -34,7 +31,6 @@ dev = [
 
 [tool.ruff.lint]
 ignore = ["E731", "F541"]
-
 
 [tool.ty.rules]
 unused-type-ignore-comment = "ignore"

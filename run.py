@@ -1,6 +1,6 @@
-from joystick_inversion.train import train_tilt, train_angle
-from joystick_inversion.system import make_dataset
-from joystick_inversion.parameters import calibration_values, magnetization_values
+from train import train_tilt, train_angle
+from system import make_dataset
+from parameters import calibration_values, magnetization_values
 from lightgbm import LGBMClassifier
 
 
@@ -15,3 +15,7 @@ def main() -> None:
     tilt_model = train_tilt(data=df, model=LGBMClassifier(random_state=42))
 
     angle_model = train_angle(data=df, model=LGBMClassifier(random_state=42))
+
+
+if __name__ == "__main__":
+    main()
