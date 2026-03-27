@@ -2,7 +2,7 @@
 
 ## Installation
 
-Clone the repository
+Either make a branch or fork the repo and clone it with
 
 ```bash
 git clone <this repo or your fork>
