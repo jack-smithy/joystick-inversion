@@ -1,83 +1,97 @@
+from typing import Literal
+
 import numpy as np
+import numpy.linalg as LA
 import pandas as pd
 from lightgbm import LGBMClassifier, LGBMRegressor
-from sklearn.multioutput import MultiOutputRegressor
+from sklearn.metrics import classification_report, mean_absolute_error
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
+from sklearn.multioutput import MultiOutputRegressor
 
-labels = {
-    "south": 0,
-    "north": 1,
-    "east": 2,
-    "west": 3,
-    "ground": 4,
-    "push": 5,
-}
-
-# Inverse map: {0: "south", 1: "north", ...}
-label_names = {v: k for k, v in labels.items()}
-class_names = [label_names[i] for i in range(len(labels))]  # ordered list
+from system import DIRECTION_MAP, DIRECTIONS
+from utils import timed
 
 
+def filter(
+    df: pd.DataFrame, col: Literal["tilt", "angle"]
+) -> tuple[np.ndarray, np.ndarray]:
+    X = df[["Bx", "By", "Bz"]]
+    y = df[col]
+
+    if col == "tilt":
+        y = y.astype(np.int8)
+
+    return X.to_numpy(), y.to_numpy()
+
+
+def process_angle(y: np.ndarray) -> np.ndarray:
+    """
+    y  -> (sin(y), cos(y))
+    """
+    y_rad = np.deg2rad(y)
+    sin_y, cos_y = np.sin(y_rad), np.cos(y_rad)
+    return np.concatenate((sin_y[None], cos_y[None]), axis=0).T
+
+
+def unprocess_angle(y: np.ndarray) -> np.ndarray:
+    """
+    (sin(y), cos(y)) -> y
+    """
+    norm = np.linalg.norm(y, axis=1, keepdims=True)
+    y_normalized = y / np.clip(norm, 1e-8, None)
+    return np.rad2deg(np.arctan2(y_normalized[:, 0], y_normalized[:, 1]))
+
+
+def cosine_similarity(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """
+    (sin(y_pred), cos(y_pred)), (sin(y_true), cos(y_true)) -> dy
+    """
+    y_true /= LA.norm(y_true, axis=1, keepdims=True)
+    y_pred /= LA.norm(y_pred, axis=1, keepdims=True)
+
+    dot = np.sum(y_true * y_pred, axis=1)
+    dot = np.clip(dot, -1, 1)
+
+    return np.mean(np.rad2deg(np.arccos(dot)))
+
+
+@timed()
 def train_tilt(
-    data: pd.DataFrame,
+    df_train: pd.DataFrame,
+    df_val: pd.DataFrame,
     model: LGBMClassifier,
-    include_push: bool = False,
 ) -> LGBMClassifier:
 
-    X = data[["Bx", "By", "Bz"]]
-    y = data["tilt"].astype(np.int8)
-
-    if not include_push:
-        data = data[data["tilt"] != 5]
-
-    X_train, X_val, y_train, y_val = train_test_split(
-        X,
-        y,
-        test_size=0.3,
-        shuffle=True,
-        random_state=42,
-    )
+    X_train, y_train = filter(df=df_train, col="tilt")
+    X_val, y_val = filter(df=df_val, col="tilt")
 
     model = model.fit(X_train, y_train)
 
     y_pred = model.predict(X_val)
+    res = classification_report(y_val, y_pred, target_names=DIRECTIONS)
 
-    res = classification_report(y_val, y_pred, target_names=class_names)
     print(res)
 
     return model
 
 
-def process_angle(y: pd.Series) -> pd.Series:
-    y *= np.pi / 180
-    sin_y, cos_y = y.map(np.sin), y.map(np.cos)
-    return pd.Series({"sin_y": sin_y, "cos_y": cos_y})
-
-
-def unprocess_angle(y: pd.Series) -> pd.Series:
-    return np.arctan2(y["sin_y"], y["cos_y"]) * 180 / np.pi
-
-
+@timed()
 def train_angle(
-    data: pd.DataFrame,
-    model: LGBMRegressor,
-    include_push: bool = False,
+    df_train: pd.DataFrame,
+    df_val: pd.DataFrame,
+    model: MultiOutputRegressor,
 ):
-    if not include_push:
-        data = data[data["tilt"] != 5]
+    X_train, y_train = filter(df=df_train, col="angle")
+    X_val, y_val = filter(df=df_val, col="angle")
 
-    X = data[["Bx", "By", "Bz"]]
-    y = data["angle"]
-
-    X_train, X_val, y_train, y_val = train_test_split(
-        X,
-        y,
-        test_size=0.3,
-        shuffle=True,
-        random_state=42,
-    )
+    y_train = process_angle(y=y_train)
+    y_val = process_angle(y=y_val)
 
     model = model.fit(X_train, y_train)
+
+    y_pred = model.predict(X_val)
+
+    dy = cosine_similarity(y_pred=y_pred, y_true=y_val)  # ty: ignore
+    print(f"\n Mean angular error: {dy:.5f}deg\n")
 
     return model

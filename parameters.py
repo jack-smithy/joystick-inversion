@@ -7,17 +7,17 @@ def parameter_factory(
     generator: np.random.Generator | None = None,
 ) -> np.ndarray:
     """
-    Create the system parameters for magnet and sensor locations and orientations
+    (Peter) Create the system parameters for magnet and sensor locations and orientations
     This vector is obtained from a joystick design optimization routine, it includes positions and orientations for the 4 magnets as well as positions of the 2 sensors. The sensor orientations are not obtained, but predefined for fabrication reasons
 
-    0.0162 + 0.0056
+    (Jack) We only use sensor 1 in the model so far, not sure how correct sensor 2 positions are.
 
     Args:
-        calibration (np.ndarray | None, optional): _description_. Defaults to None.
+        calibration (np.ndarray | None, optional): Measured calibration offsets. Defaults to None.
         uncertainty (bool): whether to add uncertainty to the parameters
 
     Returns:
-        np.ndarray: _description_
+        np.ndarray: Array describing the full set of system parameters
     """
     x = np.zeros((27,))
     # ------------------------------------------------
@@ -104,10 +104,16 @@ def parameter_factory(
 
 
 def magnetization_values() -> np.ndarray:
+    """
+    Measured magnetization values of the 4 magnets
+    """
     return np.asarray((1.2124, 1.204, 1.208, 1.196))
 
 
-def calibration_values():
+def calibration_values() -> np.ndarray:
+    """
+    Calibration offsets calculated by Peter for the real joystick.
+    """
     x = np.zeros((9,))
     # ------------------------------------------------
     x[0] = -3.07410451e-05  # dx     | sensor position

@@ -3,6 +3,23 @@ import numpy as np
 import pandas as pd
 
 from parameters import parameter_factory
+from utils import timed
+
+DIRECTIONS = [
+    "north",
+    "south",
+    "east",
+    "west",
+    "zero",
+]
+
+DIRECTION_MAP = {
+    "south": 0,
+    "north": 1,
+    "east": 2,
+    "west": 3,
+    "zero": 4,
+}
 
 
 def direction_from_index(index: int, M: float) -> tuple:
@@ -26,7 +43,10 @@ def direction_from_index(index: int, M: float) -> tuple:
         raise ValueError("Index must be in the range [0, 5] for 6 directions")
 
 
-def setup_magnets(parameters, magnetizations) -> magpy.Collection:
+def setup_magnets(
+    parameters: np.ndarray,
+    magnetizations: np.ndarray,
+) -> magpy.Collection:
     """
     Build the magnets at positions/with orientations according to the joystick design optimization
     1) Place magnet with magnetization M at optimum design position
@@ -89,7 +109,7 @@ def setup_magnets(parameters, magnetizations) -> magpy.Collection:
     return magpy.Collection(cub1, cub2, cub3, cub4)
 
 
-def setup_sensor(parameters: np.ndarray, two_sensors: bool = False) -> magpy.Sensor:
+def setup_sensor(parameters: np.ndarray) -> magpy.Sensor:
     """
     Build sensors 1 and 2 at positions from optimum design procedure.
     Attention: Infineon 3-D sensors are left-handed.
@@ -98,15 +118,11 @@ def setup_sensor(parameters: np.ndarray, two_sensors: bool = False) -> magpy.Sen
     when rotating the sensor in the xy-plane first, but loses correctness when small angle errors
     (tolerances) out of the xy-plane are considered.
 
-    (Jack): I think so far we only have data from one sensor. guessing its sensor 1
+    (Jack): I think so far we only have data from sensor 1. only initialize this.
     """
     sensor_1_x = parameters[8]
     sensor_1_y = parameters[9]
     sensor_1_z = parameters[10]
-
-    # sensor_2_x = parameters[11]
-    # sensor_2_y = parameters[12]
-    # sensor_2_z = parameters[13]
 
     sensor_1 = magpy.Sensor(
         position=(sensor_1_x, sensor_1_y, sensor_1_z),
@@ -120,7 +136,11 @@ def setup_sensor(parameters: np.ndarray, two_sensors: bool = False) -> magpy.Sen
         start=0,  # type: ignore
     )
 
-    # if two_sensors:
+    ### Sensor 2 init (ignore for now) #####################
+    # sensor_2_x = parameters[11]
+    # sensor_2_y = parameters[12]
+    # sensor_2_z = parameters[13]
+
     #     sensor_2 = magpy.Sensor(
     #         position=(sensor_2_x, sensor_2_y, sensor_2_z),
     #         handedness="right",
@@ -132,6 +152,7 @@ def setup_sensor(parameters: np.ndarray, two_sensors: bool = False) -> magpy.Sen
     #         anchor=(sensor_2_x, sensor_2_y, sensor_2_z),
     #         start=0,  # type: ignore
     #     )
+    #########################################################
 
     return sensor_1
 
@@ -143,8 +164,9 @@ def make_sensor_readings(
     n_steps: int = 24,
 ):
     angles = np.linspace(start=0, stop=360, num=n_steps, endpoint=False)
-    # repeat x6 for ground + push + (tilt x 4)
-    angles = np.tile(angles, 6)
+
+    # repeat x5 for ground  + (tilt x 4)
+    angles = np.tile(angles, 5)
 
     # spinny spinny
     magnets.rotate_from_angax(angle=angles, axis="z", anchor=(0, 0, 0), start=0)
@@ -194,23 +216,31 @@ def make_sensor_readings(
         start=n_steps * 4,
     )
 
-    # 5. push
-    magnets.move(
-        displacement=(0, 0, -2e-3),
-        start=n_steps * 5,
-    )
-
     B = magnets.getB(sensors)
 
     return B
 
 
-def make_positions(n_simulations: int, n_steps: int = 24):
-    angles = np.linspace(start=0, stop=360, num=n_steps, endpoint=False)
-    angles = np.tile(angles, 6)
+def make_positions(
+    n_simulations: int,
+    n_steps: int = 24,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Produce matching input arguments for the simulation. Be careful
+    if you edit this as it needs to match `make_sensor_readings`.
 
-    states = np.ones((n_steps * 6,))
-    for i in range(6):
+    Args:
+        n_simulations (int): Number of joystick instances to simulate
+        n_steps (int, optional): Rotation discretization. Defaults to 24.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: Corresponding tilts and angles.
+    """
+    angles = np.linspace(start=0, stop=360, num=n_steps, endpoint=False)
+    angles = np.tile(angles, 5)
+
+    states = np.ones((n_steps * 5,))
+    for i in range(5):
         states[n_steps * i : n_steps * (i + 1)] *= i
 
     if n_simulations > 1:
@@ -220,51 +250,63 @@ def make_positions(n_simulations: int, n_steps: int = 24):
     return states, angles
 
 
+@timed()
 def make_dataset(
-    n_simulations,
-    calibration,
-    magnetizations,
+    n_simulations: int,
+    calibration: np.ndarray | None,
+    magnetizations: np.ndarray,
     n_steps: int = 24,
     seed: int | None = None,
 ) -> pd.DataFrame:
-    Bxi, Byi, Bzi = [], [], []
-    for i in range(n_simulations):
-        generator = None
-        if seed is not None:
-            generator = np.random.default_rng(seed=seed + i)
+    """
+    Create a full training/ validaton data set.
 
+    Args:
+        n_simulations (int): Number of joystick instances to simulate
+        calibration (np.ndarray | None, optional): Calibration offset
+        magnetizations (np.ndarray): Magnetization values
+        n_steps (int, optional): Rotation discretization. Defaults to 24.
+        seed (int | None, optional): Random seed for tolerances. Defaults to None.
+
+    Returns:
+        pd.DataFrame: Full simulation dataset
+    """
+    Bs = []
+    for i in range(n_simulations):
+        # init system parameters
+        generator = np.random.default_rng(seed=seed + i) if seed is not None else None
         params = parameter_factory(calibration=calibration, generator=generator)
 
+        # init joystick simulation
         sensor = setup_sensor(parameters=params)
         magnets = setup_magnets(
             parameters=params,
             magnetizations=magnetizations,
         )
 
-        bx, by, bz = make_sensor_readings(
+        # simulate whole sweeep
+        B = make_sensor_readings(
             magnets=magnets,
             sensors=sensor,
             parameters=params,
             n_steps=n_steps,
-        ).T
+        )
 
-        Bxi.append(bx)
-        Byi.append(by)
-        Bzi.append(bz)
+        Bs.append(B)
 
-    Bx = np.concatenate(Bxi)
-    By = np.concatenate(Byi)
-    Bz = np.concatenate(Bzi)
+    B = np.concatenate(Bs, axis=0)
 
+    # get corresponding input states
+    # (the bit we are trying to predict)
     states, angles = make_positions(
         n_simulations=n_simulations,
         n_steps=n_steps,
     )
 
     dataset = {
-        "Bx": Bx,
-        "By": By,
-        "Bz": Bz,
+        "Bx": B[:, 0],
+        "By": B[:, 1],
+        "Bz": B[:, 2],
         "tilt": states,
         "angle": angles,
     }
