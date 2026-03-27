@@ -1,10 +1,11 @@
+from pathlib import Path
+
 from lightgbm import LGBMClassifier, LGBMRegressor
 from sklearn.multioutput import MultiOutputRegressor
-from pathlib import Path
 
 from joystick import make_dataset
 from parameters import calibration_values, magnetization_values
-from train import train_angle, train_tilt, val_tilt, val_angle
+from train import train_angle, train_tilt, val_angle, val_tilt
 from utils import load_measurement_data
 
 SEED = 1

@@ -3,9 +3,8 @@ from typing import Literal
 import numpy as np
 import numpy.linalg as LA
 import pandas as pd
-from lightgbm import LGBMClassifier, LGBMRegressor
-from sklearn.metrics import classification_report, mean_absolute_error
-from sklearn.model_selection import train_test_split
+from lightgbm import LGBMClassifier
+from sklearn.metrics import classification_report
 from sklearn.multioutput import MultiOutputRegressor
 
 from constants import DIRECTIONS
