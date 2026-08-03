@@ -153,14 +153,14 @@ def make_sensor_readings(
     angles = np.tile(angles, 5)
 
     # spinny spinny
-    magnets.rotate_from_angax(angle=angles, axis="z", anchor=(0, 0, 0), start=0)
+    magnets.rotate_from_angax(angle=angles, axis="z", anchor=(0, 0, 0), start=0)  # type: ignore
 
     # 0. south
     magnets.rotate_from_angax(
         angle=parameters[22],
         axis="x",
         anchor=(0, 0, 0),
-        start=n_steps * 0,
+        start=n_steps * 0,  # type: ignore
     )
 
     # 1. north
@@ -168,7 +168,7 @@ def make_sensor_readings(
         angle=-parameters[23] * 2,
         axis="x",
         anchor=(0, 0, 0),
-        start=n_steps * 1,
+        start=n_steps * 1,  # type: ignore
     )
 
     # 2. east (through ground state)
@@ -176,12 +176,12 @@ def make_sensor_readings(
         angle=parameters[24],
         axis="x",
         anchor=(0, 0, 0),
-        start=n_steps * 2,
+        start=n_steps * 2,  # type: ignore
     ).rotate_from_angax(
         angle=parameters[24],
         axis="y",
         anchor=(0, 0, 0),
-        start=n_steps * 2,
+        start=n_steps * 2,  # type: ignore
     )
 
     # 3. west
@@ -189,7 +189,7 @@ def make_sensor_readings(
         angle=-parameters[25] * 2,
         axis="y",
         anchor=(0, 0, 0),
-        start=n_steps * 3,
+        start=n_steps * 3,  # type: ignore
     )
 
     # 4. ground
@@ -197,7 +197,7 @@ def make_sensor_readings(
         angle=parameters[25],
         axis="y",
         anchor=(0, 0, 0),
-        start=n_steps * 4,
+        start=n_steps * 4,  # type: ignore
     )
 
     B = magnets.getB(sensors)
@@ -205,10 +205,12 @@ def make_sensor_readings(
     return B
 
 
+state_dict = {0: "south", 1: "north", 2: "east", 3: "west", 4: "ground"}
+
+
 def make_positions(
-    n_simulations: int,
     n_steps: int = 24,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Produce matching input arguments for the simulation. Be careful
     if you edit this as it needs to match `make_sensor_readings`.
@@ -220,28 +222,32 @@ def make_positions(
     Returns:
         tuple[np.ndarray, np.ndarray]: Corresponding tilts and angles.
     """
-    angles = np.linspace(start=0, stop=360, num=n_steps, endpoint=False)
-    angles = np.tile(angles, 5)
+    angles_idx = np.linspace(
+        start=0,
+        stop=n_steps,
+        num=n_steps,
+        endpoint=False,
+        dtype=np.int16,
+    )
+    angles_idx = np.tile(angles_idx, 5)
+    angles = angles_idx * 360 / n_steps
 
-    states = np.ones((n_steps * 5,))
+    tilt_idx = np.ones((n_steps * 5,), dtype=np.int16)
     for i in range(5):
-        states[n_steps * i : n_steps * (i + 1)] *= i
+        tilt_idx[n_steps * i : n_steps * (i + 1)] *= i
 
-    if n_simulations > 1:
-        angles = np.tile(angles, n_simulations)
-        states = np.tile(states, n_simulations)
+    tilt = np.asarray([state_dict[int(s)] for s in tilt_idx])
 
-    return states, angles
+    return tilt_idx, tilt, angles_idx, angles
 
 
 @timed()
 def make_dataset(
-    n_simulations: int,
     calibration: np.ndarray | None,
     magnetizations: np.ndarray,
     n_steps: int = 24,
     seed: int | None = None,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Create a full training/ validaton data set.
 
@@ -255,44 +261,45 @@ def make_dataset(
     Returns:
         pd.DataFrame: Full simulation dataset
     """
-    Bs = []
-    for i in range(n_simulations):
-        # init system parameters
-        generator = np.random.default_rng(seed=seed + i) if seed is not None else None
-        params = parameter_factory(calibration=calibration, generator=generator)
 
-        # init joystick simulation
-        sensor = setup_sensor(parameters=params)
-        magnets = setup_magnets(
-            parameters=params,
-            magnetizations=magnetizations,
-        )
+    # init system parameters
+    generator = np.random.default_rng(seed=seed) if seed is not None else None
+    params = parameter_factory(generator=generator)
 
-        # simulate whole sweeep
-        B = make_sensor_readings(
-            magnets=magnets,
-            sensors=sensor,
-            parameters=params,
-            n_steps=n_steps,
-        )
+    # init joystick simulation
+    sensor = setup_sensor(parameters=params)
+    magnets = setup_magnets(
+        parameters=params,
+        magnetizations=magnetizations,
+    )
 
-        Bs.append(B)
-
-    B = np.concatenate(Bs, axis=0)
-
-    # get corresponding input states
-    # (the bit we are trying to predict)
-    states, angles = make_positions(
-        n_simulations=n_simulations,
+    # simulate whole sweeep
+    B = make_sensor_readings(
+        magnets=magnets,
+        sensors=sensor,
+        parameters=params,
         n_steps=n_steps,
     )
 
-    dataset = {
-        "Bx": B[:, 0],
-        "By": B[:, 1],
-        "Bz": B[:, 2],
-        "tilt": states,
-        "angle": angles,
-    }
+    # get corresponding input states
+    # (the bit we are trying to predict)
+    tilt_idx, tilt, angles_idx, angles = make_positions(n_steps=n_steps)
 
-    return pd.DataFrame(dataset)
+    X = pd.DataFrame(
+        {
+            "Bx": B[:, 0],
+            "By": B[:, 1],
+            "Bz": B[:, 2],
+        }
+    )
+
+    y = pd.DataFrame(
+        {
+            "tilt": tilt,
+            "tilt_idx": tilt_idx,
+            "angle": angles,
+            "angle_idx": angles_idx,
+        }
+    )
+
+    return X, y

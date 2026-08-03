@@ -11,11 +11,13 @@ dependencies = [
     "lightgbm>=4.6.0",
     "magpylib>=5.2.2",
     "matplotlib>=3.10.8",
+    "nbformat>=5.10.4",
     "numpy>=2.4.2",
     "pandas>=3.0.1",
     "pandas-stubs>=3.0.0.260204",
     "scikit-learn>=1.8.0",
     "scikit-learn-stubs>=0.0.3",
+    "torch>=2.13.0",
 ]
 
 

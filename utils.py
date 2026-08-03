@@ -28,10 +28,14 @@ def timed() -> Callable[[Callable[P, R]], Callable[P, R]]:
     return decorator
 
 
-def load_measurement_data(path: Path) -> pd.DataFrame:
+def load_measurement_data(path: Path | str) -> pd.DataFrame:
     """
     Load measurement data from files and return df in same format as simulated data
     """
+
+    if isinstance(path, str):
+        path = Path(path)
+
     if "sensor2" in path.__str__():
         raise ValueError("Sensor 2 data not trained yet")
 

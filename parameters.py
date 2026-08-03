@@ -1,10 +1,29 @@
 import numpy as np
+from dataclasses import dataclass
+from typing import TypedDict
+
+
+class Parameters:
+    magnet_1_x: float = 0.0181
+    magnet_1_y: float = 0.0
+    magnet_1_z: float = 0.0217
+    magnet_2_x: float = -0.0183
+    magnet_2_y: float = 0.0
+    magnet_2_z: float = 0.0218
+    magnet_3_x: float = 0.0
+    magnet_3_y: float = 0.018
+    magnet_3_z: float = 0.0217
+    magnet_4_x: float = 0.0
+    magnet_4_y: float = -0.0181
+    magnet_4_z: float = 0.0218
+    sensor_1_x: float
+    sensor_1_y: float
+    sensor_1_z: float
 
 
 def parameter_factory(
-    calibration: np.ndarray | None = None,
-    *,
     generator: np.random.Generator | None = None,
+    uncertainty_num_sigmas: int = 1,
 ) -> np.ndarray:
     """
     (Peter) Create the system parameters for magnet and sensor locations and orientations
@@ -56,17 +75,6 @@ def parameter_factory(
     x[26] = 5e-3  #               | magnet dimensions
     # ------------------------------------------------
 
-    if calibration is not None:
-        x[8] += calibration[0]
-        x[9] += calibration[1]
-        x[10] += calibration[2]
-        x[20] += calibration[3]
-        x[21] += calibration[4]
-        x[22] += calibration[5]
-        x[23] += calibration[6]
-        x[24] += calibration[7]
-        x[25] += calibration[8]
-
     if generator is not None:
         # add uncertainty to positions
         position_uncertainty_scale = 1e-4  # 0.1mm
@@ -74,7 +82,7 @@ def parameter_factory(
         # magnet positions
         x[:8] += generator.normal(
             loc=0,
-            scale=position_uncertainty_scale,
+            scale=position_uncertainty_scale * uncertainty_num_sigmas,
             size=(8,),
         )
 
