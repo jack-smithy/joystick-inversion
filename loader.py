@@ -60,18 +60,21 @@ def make_trajectory(
     p_rotate: float = 0.25,
     p_tilt: float = 0.25,
     seed=None,
+    start_angle: int | None = 0,
 ) -> pd.DataFrame:
-    """Random walk of legal transitions, starting at ground/angle 0. Each step
-    rotates one step (cw/ccw uniformly) with probability p_rotate, makes a tilt
-    move with probability p_tilt (from ground: uniform over the 4 directions;
-    tilted: back to ground), and stays put with the remainder."""
+    """Random walk of legal transitions, starting at ground and start_angle
+    (None = uniform random, for state-space coverage). Each step rotates one
+    step (cw/ccw uniformly) with probability p_rotate, makes a tilt move with
+    probability p_tilt (from ground: uniform over the 4 directions; tilted:
+    back to ground), and stays put with the remainder."""
     assert p_rotate + p_tilt <= 1
     rng = np.random.default_rng(seed)
     sweep = pd.concat((X, y), axis=1)
     n_steps = int(sweep["angle_idx"].max()) + 1
     lookup = sweep.set_index(["tilt", "angle_idx"], drop=False)
 
-    tilt, angle = "ground", 0
+    tilt = "ground"
+    angle = int(rng.integers(n_steps)) if start_angle is None else start_angle
     rows = []
     for _ in range(length):
         rows.append(lookup.loc[(tilt, angle)])
@@ -116,6 +119,7 @@ class TrajectoryDataset(Dataset):
             self.p_rotate,
             self.p_tilt,
             seed=[self.seed, i],  # independent stream per item
+            start_angle=None,  # random start so short sequences still cover all angles
         )
         features = torch.tensor(traj[["Bx", "By", "Bz"]].to_numpy(np.float32))
         target = torch.tensor(traj[["tilt_idx", "angle_idx"]].to_numpy(np.int64))
@@ -134,10 +138,9 @@ def main():
     )  # tilt+rotation combo
 
     X, y = make_dataset(
-        calibration=calibration_values(),
         magnetizations=magnetization_values(),
         seed=0,
-        n_steps=4,
+        n_steps=24,
     )
 
     traj = make_trajectory(X, y, length=50, p_rotate=0.5, p_tilt=0.2, seed=0)
@@ -148,7 +151,9 @@ def main():
     )
     print(traj[["tilt", "angle"]].head(25).to_string(), "\n")
 
-    ds = TrajectoryDataset(X, y, n_trajectories=32, seq_len=16, p_rotate=0.4, p_tilt=0.3)
+    ds = TrajectoryDataset(
+        X, y, n_trajectories=32, seq_len=16, p_rotate=0.4, p_tilt=0.3
+    )
     loader = DataLoader(
         ds,
         batch_size=8,
@@ -159,7 +164,9 @@ def main():
     assert Xb.shape == (8, 16, 3) and Xb.dtype == torch.float32
     assert yb.shape == (8, 16, 2) and yb.dtype == torch.int64
 
-    ds2 = TrajectoryDataset(X, y, n_trajectories=32, seq_len=16, p_rotate=0.4, p_tilt=0.3)
+    ds2 = TrajectoryDataset(
+        X, y, n_trajectories=32, seq_len=16, p_rotate=0.4, p_tilt=0.3
+    )
     assert torch.equal(ds[3][0], ds2[3][0]) and torch.equal(ds[3][1], ds2[3][1])
     print("batch X:", tuple(Xb.shape), "y:", tuple(yb.shape))
 

@@ -243,7 +243,6 @@ def make_positions(
 
 @timed()
 def make_dataset(
-    calibration: np.ndarray | None,
     magnetizations: np.ndarray,
     n_steps: int = 24,
     seed: int | None = None,

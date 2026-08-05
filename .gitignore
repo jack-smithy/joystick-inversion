@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# benchmark trajectory cache + raw results
+.bench_cache/
