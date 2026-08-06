@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+.bench_cache
+
+# generated evaluation figures
+plots/

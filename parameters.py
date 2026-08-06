@@ -1,106 +1,61 @@
+from dataclasses import dataclass
+
 import numpy as np
 
+from constants import DIRECTION_MAP
 
-def parameter_factory(
-    calibration: np.ndarray | None = None,
-    *,
-    generator: np.random.Generator | None = None,
-) -> np.ndarray:
+N_MAGNETS = 4
+N_SENSORS = 2
+N_TILTS = (
+    len(DIRECTION_MAP) - 1
+)  # south, north, east, west (ground is the un-tilted rest)
+
+# Per-unit manufacturing tolerances, as 1-sigma. These are the knobs to turn when
+# matching simulated units to measured hardware.
+POSITION_TOLERANCE = 1e-4  # 0.1mm  | magnet and sensor positions
+SIZE_TOLERANCE = 1e-4  # 0.1mm      | on a 5mm cube edge
+ANGLE_TOLERANCE = 1.0  # 1deg       | magnet/sensor orientations and tilt angles
+POLARIZATION_TOLERANCE = 15e-3  # 15mT
+
+
+@dataclass
+class Parameters:
     """
-    (Peter) Create the system parameters for magnet and sensor locations and orientations
-    This vector is obtained from a joystick design optimization routine, it includes positions and orientations for the 4 magnets as well as positions of the 2 sensors. The sensor orientations are not obtained, but predefined for fabrication reasons
+    One joystick's geometry, magnetics and travel.
 
-    (Jack) We only use sensor 1 in the model so far, not sure how correct sensor 2 positions are.
+    Magnet quantities are 4 parallel entries, one per magnet. Positions are in m,
+    angles in deg, polarizations in T.
 
-    Args:
-        calibration (np.ndarray | None, optional): Measured calibration offsets. Defaults to None.
-        uncertainty (bool): whether to add uncertainty to the parameters
-
-    Returns:
-        np.ndarray: Array describing the full set of system parameters
+    Orientation convention: `phi` is applied about global z, then `theta` about global y,
+    both anchored at the part itself. `theta` only ever carries a small misalignment
+    (~ANGLE_TOLERANCE), so the choice of convention is a second-order effect.
     """
-    x = np.zeros((27,))
-    # ------------------------------------------------
-    x[0] = 0.0217  # z magnet 1   | magnet positions
-    x[1] = 0.0218  # z magnet 2   |
-    x[2] = 0.0217  # z magnet 3   |
-    x[3] = 0.0218  # z magnet 4   |
-    x[4] = 0.0181  # x magnet 1   |
-    x[5] = -0.0183  # x magnet 2  |
-    x[6] = 0.018  # y magnet 3    |
-    x[7] = -0.0181  # y magnet 4  |
-    # ------------------------------------------------
-    x[8] = 0.017  # x sensor1     | sensor positions
-    x[9] = -0.0135  # y sensor1   |
-    x[10] = 0.0162  # z sensor1   |
-    x[11] = 0.0135  # x sensor2   |
-    x[12] = 0.0171  # y sensor2   |
-    x[13] = 0.0162  # z sensor2   |
-    # ------------------------------------------------
-    x[14] = 357  # phi magnet 1   | magnet orientations
-    x[15] = 181  # phi magnet 2   |
-    x[16] = 284  # phi magnet 3   |
-    x[17] = 270  # phi magnet 4   |
-    # ------------------------------------------------
-    x[18] = 2  # index magnet 1   | magnetization indices
-    x[19] = 3  # index magnet 2   | converted to direction for 1 and 2
-    # ------------------------------------------------
-    x[20] = 0.0  # phi sensor 1   | sensor orientations
-    x[21] = 0.0  # theta sensor 1 |
-    # ------------------------------------------------
-    x[22] = 4.0  # s              | tilt angles
-    x[23] = 4.0  # n              |
-    x[24] = 4.0  # e              |
-    x[25] = 4.0  # w              |
-    # ------------------------------------------------
-    x[26] = 5e-3  #               | magnet dimensions
-    # ------------------------------------------------
 
-    if calibration is not None:
-        x[8] += calibration[0]
-        x[9] += calibration[1]
-        x[10] += calibration[2]
-        x[20] += calibration[3]
-        x[21] += calibration[4]
-        x[22] += calibration[5]
-        x[23] += calibration[6]
-        x[24] += calibration[7]
-        x[25] += calibration[8]
+    magnet_position: np.ndarray  # (4, 3) x, y, z
+    magnet_phi: np.ndarray  # (4,)
+    magnet_theta: np.ndarray  # (4,)
+    magnet_direction: np.ndarray  # (4,) index into `direction_from_index`
+    magnet_polarization: np.ndarray  # (4,)
+    magnet_size: float  # cube edge length
+    sensor_position: np.ndarray  # (2, 3); only sensor 1 is used so far
+    sensor_phi: float  # on top of the -45deg mounting rotation
+    sensor_theta: float
+    tilt_angle: np.ndarray  # (4,) in DIRECTION_MAP order: south, north, east, west
 
-    if generator is not None:
-        # add uncertainty to positions
-        position_uncertainty_scale = 1e-4  # 0.1mm
+    def __post_init__(self) -> None:
+        # a mis-shaped array would broadcast silently through magpylib and quietly
+        # give the wrong physics, so check rather than trust
+        assert self.magnet_position.shape == (N_MAGNETS, 3), self.magnet_position.shape
+        assert self.sensor_position.shape == (N_SENSORS, 3), self.sensor_position.shape
+        assert self.tilt_angle.shape == (N_TILTS,), self.tilt_angle.shape
 
-        # magnet positions
-        x[:8] += generator.normal(
-            loc=0,
-            scale=position_uncertainty_scale,
-            size=(8,),
-        )
-
-        # sensor positions
-        x[8:14] += generator.normal(
-            loc=0,
-            scale=position_uncertainty_scale,
-            size=(6,),
-        )
-
-        angle_uncertainty_scale = 0.1  # 1deg
-
-        # magnet angles
-        x[14:18] += generator.normal(
-            loc=0,
-            scale=angle_uncertainty_scale,
-            size=(4,),
-        )
-
-        x[20:22] += generator.normal(
-            loc=0,
-            scale=angle_uncertainty_scale,
-            size=(2,),
-        )
-
-    return x
+        for name in (
+            "magnet_phi",
+            "magnet_theta",
+            "magnet_direction",
+            "magnet_polarization",
+        ):
+            assert getattr(self, name).shape == (N_MAGNETS,), name
 
 
 def magnetization_values() -> np.ndarray:
@@ -110,22 +65,84 @@ def magnetization_values() -> np.ndarray:
     return np.asarray((1.2124, 1.204, 1.208, 1.196))
 
 
-def calibration_values() -> np.ndarray:
+def parameter_factory(generator: np.random.Generator | None = None) -> Parameters:
     """
-    Calibration offsets calculated by Peter for the real joystick.
+    (Peter) Create the system parameters for magnet and sensor locations and orientations
+    This vector is obtained from a joystick design optimization routine, it includes positions and orientations for the 4 magnets as well as positions of the 2 sensors. The sensor orientations are not obtained, but predefined for fabrication reasons
+
+    (Jack) We only use sensor 1 in the model so far, not sure how correct sensor 2 positions are.
+
+    Args:
+        generator (np.random.Generator | None, optional): When given, per-unit
+            tolerances are drawn from it, i.e. one distinct joystick per generator
+            state. Defaults to None, which gives the nominal design.
+
+    Returns:
+        Parameters: The full set of system parameters for one joystick.
     """
-    x = np.zeros((9,))
     # ------------------------------------------------
-    x[0] = -3.07410451e-05  # dx     | sensor position
-    x[1] = 6.42540894e-04  # dy      |
-    x[2] = 4.97023923e-04  # dz      |
+    magnet_position = np.array(
+        [
+            (0.0181, 0.0, 0.0217),  # magnet 1  | x, y, z
+            (-0.0183, 0.0, 0.0218),  # magnet 2 |
+            (0.0, 0.018, 0.0217),  # magnet 3   |
+            (0.0, -0.0181, 0.0218),  # magnet 4 |
+        ]
+    )
     # ------------------------------------------------
-    x[3] = 2.99978359e00  #  dphi    | sensor orientation
-    x[4] = 2.87211782e00  # dtheta   |
+    magnet_phi = np.array((357.0, 181.0, 284.0, 270.0))  # about z
+    magnet_theta = np.zeros((N_MAGNETS,))  # about y, nominally aligned
     # ------------------------------------------------
-    x[5] = -9.97912137e-01  # s      | tilt angles
-    x[6] = -9.94383444e-01  # n      |
-    x[7] = -5.00236025e-01  # e      |
-    x[8] = -9.89713586e-01  # w      |
+    # magnets 1 and 2 polarize along +y/-y, magnets 3 and 4 along -z/+z
+    magnet_direction = np.array((2, 3, 5, 4))
+    magnet_polarization = magnetization_values()
     # ------------------------------------------------
-    return x
+    magnet_size = 5e-3
+    # ------------------------------------------------
+    sensor_position = np.array(
+        [
+            (0.017, -0.0135, 0.0162),  # sensor 1 | x, y, z
+            (0.0135, 0.0171, 0.0162),  # sensor 2 |
+        ]
+    )
+    sensor_phi = 0.0
+    sensor_theta = 0.0
+    # ------------------------------------------------
+    tilt_angle = np.full((N_TILTS,), 4.0)  # south, north, east, west
+
+    if generator is not None:
+        magnet_position += generator.normal(
+            scale=POSITION_TOLERANCE,
+            size=magnet_position.shape,
+        )
+        magnet_phi += generator.normal(scale=ANGLE_TOLERANCE, size=(N_MAGNETS,))
+        magnet_theta += generator.normal(scale=ANGLE_TOLERANCE, size=(N_MAGNETS,))
+        magnet_polarization += generator.normal(
+            scale=POLARIZATION_TOLERANCE,
+            size=(N_MAGNETS,),
+        )
+        magnet_size += generator.normal(scale=SIZE_TOLERANCE)
+
+        sensor_position += generator.normal(
+            scale=POSITION_TOLERANCE,
+            size=sensor_position.shape,
+        )
+        sensor_phi += generator.normal(scale=ANGLE_TOLERANCE)
+        sensor_theta += generator.normal(scale=ANGLE_TOLERANCE)
+
+        tilt_angle += generator.normal(scale=ANGLE_TOLERANCE, size=(N_TILTS,))
+
+        # magnet_direction is categorical, so it is deliberately never perturbed
+
+    return Parameters(
+        magnet_position=magnet_position,
+        magnet_phi=magnet_phi,
+        magnet_theta=magnet_theta,
+        magnet_direction=magnet_direction,
+        magnet_polarization=magnet_polarization,
+        magnet_size=magnet_size,
+        sensor_position=sensor_position,
+        sensor_phi=sensor_phi,
+        sensor_theta=sensor_theta,
+        tilt_angle=tilt_angle,
+    )
