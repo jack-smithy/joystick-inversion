@@ -9,7 +9,7 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.image import AxesImage
 from sklearn.metrics import confusion_matrix
 
-from constants import TILT_NAMES
+from constants import FIELD_COLUMNS, TILT_NAMES
 from train import Predictions, bin_error
 
 INK = "#0b0b0b"
@@ -42,37 +42,6 @@ def _style(ax: Axes, title: str, xlabel: str = "", ylabel: str = "") -> None:
         spine.set_linewidth(0.6)
 
 
-def plot_error_histogram(ax: Axes, predictions: Predictions) -> None:
-    """
-    Where the angular error actually sits. Log counts, because the interesting part
-    is the tail rather than the bulk.
-    """
-    ax.hist(predictions.angle_error, bins=60, color=SERIES[0], linewidth=0)
-    ax.set_yscale("log")
-
-    # staggered heights: the two markers sit close together at this scale
-    for value, label, height in (
-        (np.median(predictions.angle_error), "median", 0.95),
-        (np.percentile(predictions.angle_error, 95), "p95", 0.82),
-    ):
-        ax.axvline(value, color=INK, linewidth=0.8)
-        ax.annotate(
-            f"{label} {value:.1f}",
-            xy=(value, height),
-            xycoords=("data", "axes fraction"),
-            color=INK,
-            fontsize=7,
-            ha="left",
-            va="top",
-            xytext=(4, 0),
-            textcoords="offset points",
-        )
-
-    ax.grid(axis="y", color=GRID, linewidth=0.6)
-    ax.set_axisbelow(True)
-    _style(ax, "Angular error", "error / deg", "predictions (log)")
-
-
 def plot_bin_distance(ax: Axes, predictions: Predictions, n_steps: int = 24) -> None:
     """
     Snapped to rest positions, how far out are the misses? Near-misses and
@@ -96,6 +65,9 @@ def plot_error_by_state(ax: Axes, predictions: Predictions, n_steps: int = 24) -
 
     Drawn on the dial the states actually live on, so a run of bad states reads as an
     arc rather than as a stretch of the x-axis. Expects a polar axes.
+
+    Mean rather than median: the classifier is exact on the large majority of states, so
+    a median line would be flat at zero everywhere and show nothing.
     """
     states = np.arange(n_steps)
     rows = [predictions.angle_error[predictions.angle_idx_true == i] for i in states]
@@ -104,7 +76,7 @@ def plot_error_by_state(ax: Axes, predictions: Predictions, n_steps: int = 24) -
     theta = np.concatenate((states, states[:1])) * (2 * np.pi / n_steps)
 
     for summarize, colour, label in (
-        (np.median, SERIES[0], "median"),
+        (np.mean, SERIES[0], "mean"),
         (lambda r: np.percentile(r, 95), SERIES[1], "p95"),
     ):
         values = [summarize(r) if len(r) else np.nan for r in rows]
@@ -184,7 +156,9 @@ def plot_field_correlation(ax: Axes, transitions: pd.DataFrame) -> None:
     How much the six input features duplicate each other. Strong off-diagonal
     structure means the network has less to work with than six numbers suggests.
     """
-    columns = ["Bx_start", "By_start", "Bz_start", "Bx_end", "By_end", "Bz_end"]
+    columns = [
+        f"{column}_{when}" for when in ("start", "end") for column in FIELD_COLUMNS
+    ]
     matrix = transitions[columns].corr().to_numpy()
 
     image = ax.imshow(matrix, cmap=POLARITY, vmin=-1, vmax=1)
@@ -239,10 +213,11 @@ def plot_evaluation(
 
     paths = []
 
-    # how wrong is the angle, continuously and snapped to rest positions
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), constrained_layout=True)
-    plot_error_histogram(axes[0], predictions)
-    plot_bin_distance(axes[1], predictions, n_steps=n_steps)
+    # how wrong is the angle. The classifier only ever predicts rest positions, so the
+    # miss distance in steps is the whole story; a continuous error histogram would be
+    # the same figure with a rescaled x-axis
+    fig, ax = plt.subplots(figsize=(5.5, 4.5), constrained_layout=True)
+    plot_bin_distance(ax, predictions, n_steps=n_steps)
     paths.append(_save(fig, directory / "error.png"))
 
     # what gets read as what
@@ -259,7 +234,7 @@ def plot_evaluation(
     plot_error_by_state(ax, predictions, n_steps=n_steps)
     paths.append(_save(fig, directory / "rotation_error.png"))
 
-    fig, ax = plt.subplots(figsize=(6.5, 5.5), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(8, 7), constrained_layout=True)
     plot_field_correlation(ax, transitions)
     paths.append(_save(fig, directory / "correlation.png"))
 

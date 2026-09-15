@@ -4,34 +4,45 @@ from sklearn.metrics import classification_report
 from torch import nn
 from torch.utils.data import DataLoader
 
-from constants import TILT_NAMES
+from constants import FIELD_COLUMNS, TILT_NAMES
 from joystick import make_transitions_datasets
 from plot import plot_evaluation
 from train import (
     Predictions,
-    angle_index,
-    angular_error,
     bin_error,
     make_dataloader,
+    state_index,
 )
 from utils import timed
 
 SEED = 1
 N_STEPS = 24
-N_UNITS_TRAIN = 8
-N_UNITS_TEST = 4
-HIDDEN = 128
-# 40 underfits badly (~10deg, train err == test err); past ~150 the gap opens up and
-# the extra capacity goes into memorizing the training units
-EPOCHS = 150
+# one class per (tilt, rotation) pair: 5 * 24 = 120
+N_STATES = len(TILT_NAMES) * N_STEPS
+# both sensors, at both ends of the transition
+N_FEATURES = 2 * len(FIELD_COLUMNS)
+# Generalizing across units is data-hungry, and it is the cheapest axis to buy accuracy
+# on: 32 -> 64 -> 128 units took the miss count 263 -> 152 -> 82 out of 8832. It has not
+# flattened, so raise this if the runtime is affordable.
+N_UNITS_TRAIN = 128
+# 4 units (2208 transitions) is too coarse: it scored this model at 5 misses when the
+# honest figure over 16 units is 82. Most units are near-perfect and a couple are not,
+# so a small test population is mostly luck
+N_UNITS_TEST = 16
+# 128 was enough for one sensor; with two, 256 is worth ~8 misses
+HIDDEN = 256
+# 40 underfits badly. Beyond ~200 the extra epochs go into memorizing training units
+EPOCHS = 200
 
-# sensor noise std in mT; fields at the sensor are a few mT peak-to-peak
-NOISE_LEVELS = (0.0, 0.01, 0.05, 0.1, 0.5)
+# Sensor noise std in mT. The signal std across states is 22.5 mT, so 0.5 mT is ~2% of
+# signal. The old 0.1 mT was 0.44%, low enough that it perturbed nothing and every model
+# architecture scored the same.
+NOISE = 0.5
 
 
 def mlp(n_out: int) -> nn.Sequential:
     """
-    (batch, 2, 3) field trajectory -> (batch, n_out)
+    (batch, 2, 6) field trajectory -> (batch, n_out)
 
     A GRU over the same input scored worse on tilt (0.92 vs 0.97) for no gain on angle:
     the state is near enough determined by the current reading, with the one predecessor
@@ -39,7 +50,7 @@ def mlp(n_out: int) -> nn.Sequential:
     """
     return nn.Sequential(
         nn.Flatten(),
-        nn.Linear(2 * 3, HIDDEN),
+        nn.Linear(N_FEATURES, HIDDEN),
         nn.ReLU(),
         nn.Linear(HIDDEN, HIDDEN),
         nn.ReLU(),
@@ -47,30 +58,19 @@ def mlp(n_out: int) -> nn.Sequential:
     )
 
 
-def angle_target(y: torch.Tensor) -> torch.Tensor:
-    """
-    angle index -> (sin(angle), cos(angle))
-    """
-    theta = y[:, 0] * (2 * torch.pi / N_STEPS)
-    return torch.stack((theta.sin(), theta.cos()), dim=1)
-
-
 def train(
     model: nn.Module,
     loader: DataLoader,
-    loss_fn: nn.Module,
-    target: str,
     epochs: int = EPOCHS,
     lr: float = 1e-3,
 ) -> nn.Module:
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    loss_fn = nn.CrossEntropyLoss()
 
     model.train()
     for _ in range(epochs):
         for X, y in loader:
-            y = y[:, 1] if target == "tilt" else angle_target(y)
-
-            loss = loss_fn(model(X), y)
+            loss = loss_fn(model(X), state_index(y, n_steps=N_STEPS))
 
             optimizer.zero_grad()
             loss.backward()
@@ -80,33 +80,25 @@ def train(
 
 
 @torch.no_grad()
-def evaluate(
-    model_tilt: nn.Module,
-    model_angle: nn.Module,
-    loader: DataLoader,
-) -> Predictions:
-    model_tilt.eval()
-    model_angle.eval()
+def evaluate(model: nn.Module, loader: DataLoader) -> Predictions:
+    model.eval()
 
-    tilt_true, tilt_pred, idx_true, angle_true, angle_pred = [], [], [], [], []
+    true, pred = [], []
 
     for X, y in loader:
-        tilt_true.append(y[:, 1].numpy())
-        tilt_pred.append(model_tilt(X).argmax(dim=1).numpy())
+        true.append(state_index(y, n_steps=N_STEPS).numpy())
+        pred.append(model(X).argmax(dim=1).numpy())
 
-        idx_true.append(y[:, 0].numpy())
-        angle_true.append(angle_target(y).numpy())
-        angle_pred.append(model_angle(X).numpy())
+    true, pred = np.concatenate(true), np.concatenate(pred)
 
-    angle_true, angle_pred = np.concatenate(angle_true), np.concatenate(angle_pred)
-
+    # the joint class carries both fields; split it back out so every per-tilt and
+    # per-rotation metric below still works
     return Predictions(
-        tilt_true=np.concatenate(tilt_true),
-        tilt_pred=np.concatenate(tilt_pred),
-        angle_idx_true=np.concatenate(idx_true),
-        # snap the continuous prediction to the nearest rest position
-        angle_idx_pred=angle_index(angle_pred, n_steps=N_STEPS),
-        angle_error=angular_error(y_true=angle_true, y_pred=angle_pred),
+        tilt_true=true // N_STEPS,
+        tilt_pred=pred // N_STEPS,
+        angle_idx_true=true % N_STEPS,
+        angle_idx_pred=pred % N_STEPS,
+        n_steps=N_STEPS,
     )
 
 
@@ -114,19 +106,25 @@ def metrics(predictions: Predictions) -> dict[str, float]:
     """
     Headline scores, one row's worth.
 
-    `angle acc` is how often the rotation state is read correctly; `within 1` allows a
-    single-step miss, which separates near-misses from real confusions. The error
-    median and p95 say what the mean cannot.
+    `state acc` is the one that matters: how often all 120 states are read exactly right,
+    which is what the model is actually trained on. `tilt acc` and `angle acc` decompose
+    it, and are both upper bounds on it. `within 1` allows a single-step rotation miss —
+    it sits on top of `angle acc`, so the two being equal means there are no near-misses
+    at all, only gross ones. `err mean` is a quantized miss distance (see
+    `Predictions.angle_error`), i.e. how far out the misses land, not a precision.
+
+    The median and p95 of that error were dropped: the classifier is exact well over 95%
+    of the time, so both read 0.0 at every noise level and said nothing.
     """
     delta = bin_error(predictions, n_steps=N_STEPS)
+    tilt_hit = predictions.tilt_true == predictions.tilt_pred
 
     return {
-        "tilt acc": float((predictions.tilt_true == predictions.tilt_pred).mean()),
+        "state acc": float((tilt_hit & (delta == 0)).mean()),
+        "tilt acc": float(tilt_hit.mean()),
         "angle acc": float((delta == 0).mean()),
         "within 1": float((delta <= 1).mean()),
         "err mean": float(predictions.angle_error.mean()),
-        "err med": float(np.median(predictions.angle_error)),
-        "err p95": float(np.percentile(predictions.angle_error, 95)),
     }
 
 
@@ -145,13 +143,13 @@ def report(predictions: Predictions) -> None:
 
     delta = bin_error(predictions, n_steps=N_STEPS)
 
-    print(f"{'tilt state':<12}{'angle acc':>10}{'err med':>10}{'worst miss':>12}")
+    print(f"{'tilt state':<12}{'angle acc':>10}{'err mean':>10}{'worst miss':>12}")
     for tilt, name in enumerate(TILT_NAMES):
         rows = predictions.tilt_true == tilt
         print(
             f"{name:<12}"
             f"{(delta[rows] == 0).mean():>10.3f}"
-            f"{np.median(predictions.angle_error[rows]):>10.2f}"
+            f"{predictions.angle_error[rows].mean():>10.2f}"
             f"{delta[rows].max():>9d} steps"
         )
 
@@ -171,37 +169,25 @@ def main() -> None:
         n_steps=N_STEPS,
     )
 
-    noise = 0.1
     torch.manual_seed(SEED)
 
     # train and test at the same noise level
-    loader_train = make_dataloader(df_train, batch_size=64, noise=noise, seed=SEED)
+    loader_train = make_dataloader(df_train, batch_size=64, noise=NOISE, seed=SEED)
     loader_test = make_dataloader(
         df_test,
         batch_size=256,
         shuffle=False,
-        noise=noise,
+        noise=NOISE,
         seed=SEED + 1,
     )
 
-    model_tilt = train(
-        model=mlp(len(TILT_NAMES)),
-        loader=loader_train,
-        loss_fn=nn.CrossEntropyLoss(),
-        target="tilt",
-    )
-    model_angle = train(
-        model=mlp(2),
-        loader=loader_train,
-        loss_fn=nn.MSELoss(),
-        target="angle",
-    )
+    model = train(model=mlp(N_STATES), loader=loader_train)
 
-    predictions = evaluate(model_tilt, model_angle, loader_test)
+    predictions = evaluate(model, loader_test)
     scores = metrics(predictions)
 
     print(f"\n{'noise/mT':>10}" + "".join(f"{name:>11}" for name in scores))
-    print(f"{noise:>10.2f}" + "".join(f"{value:>11.3f}" for value in scores.values()))
+    print(f"{NOISE:>10.2f}" + "".join(f"{value:>11.3f}" for value in scores.values()))
     print()
 
     report(predictions)

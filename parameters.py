@@ -12,10 +12,23 @@ N_TILTS = (
 
 # Per-unit manufacturing tolerances, as 1-sigma. These are the knobs to turn when
 # matching simulated units to measured hardware.
-POSITION_TOLERANCE = 1e-4  # 0.1mm  | magnet and sensor positions
-SIZE_TOLERANCE = 1e-4  # 0.1mm      | on a 5mm cube edge
-ANGLE_TOLERANCE = 1.0  # 1deg       | magnet/sensor orientations and tilt angles
-POLARIZATION_TOLERANCE = 15e-3  # 15mT
+POSITION_TOLERANCE = 2e-4  # 0.2mm  | magnet and sensor positions
+SIZE_TOLERANCE = 2e-4  # 0.2mm      | on a 5mm cube edge
+ANGLE_TOLERANCE = 2.0  # 2deg       | magnet/sensor orientations
+POLARIZATION_TOLERANCE = 30e-3  # 30mT
+
+# Travel tolerance is split out from ANGLE_TOLERANCE because it is a different physical
+# thing (a mechanical stop, not an assembly alignment) and because it is the single knob
+# that limits accuracy. 1 sigma on a 4 deg nominal travel is 25%, so ~5% of units tilt
+# less than 2 deg and are barely distinguishable from the un-tilted rest position: in a
+# 16-unit test population the two such units produced 90% of all misclassifications.
+# Tighten this if the mechanism can hold it; it buys more than any model change.
+#
+# Deliberately NOT doubled along with the other tolerances. At 2 deg, ~16% of units tilt
+# under 2 deg and ~2% travel backwards (a negative draw inverts the tilt, making a
+# commanded east physically a west tilt). That is a shared floor every model hits equally,
+# and it would swamp exactly the differences the comparison is trying to resolve.
+TILT_TOLERANCE = 1.0  # 1deg        | per-direction tilt travel
 
 
 @dataclass
@@ -130,7 +143,7 @@ def parameter_factory(generator: np.random.Generator | None = None) -> Parameter
         sensor_phi += generator.normal(scale=ANGLE_TOLERANCE)
         sensor_theta += generator.normal(scale=ANGLE_TOLERANCE)
 
-        tilt_angle += generator.normal(scale=ANGLE_TOLERANCE, size=(N_TILTS,))
+        tilt_angle += generator.normal(scale=TILT_TOLERANCE, size=(N_TILTS,))
 
         # magnet_direction is categorical, so it is deliberately never perturbed
 

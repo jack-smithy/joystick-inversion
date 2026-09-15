@@ -2,7 +2,7 @@ import magpylib as magpy
 import numpy as np
 import pandas as pd
 
-from constants import DIRECTION_MAP
+from constants import DIRECTION_MAP, FIELD_COLUMNS
 from parameters import N_MAGNETS, Parameters, parameter_factory
 from utils import timed
 
@@ -69,48 +69,53 @@ def setup_magnets(parameters: Parameters) -> magpy.Collection:
     return magpy.Collection(*magnets)
 
 
-def setup_sensor(parameters: Parameters) -> magpy.Sensor:
+def setup_sensors(parameters: Parameters) -> magpy.Collection:
     """
-    Build sensor 1 at the position from the optimum design procedure, rotated by the
-    -45deg mounting angle plus its own orientation tolerances.
+    Build both sensors at the positions from the optimum design procedure, each rotated
+    by the -45deg mounting angle plus its own orientation tolerances.
 
-    Attention: Infineon 3-D sensors are left-handed. A right-handed sensor is chosen here
-    instead, which would need the field z-component flipped (B1[2] = -B1[2]) to match the
+    Sensor 2 is not optional. Sensor 1 alone cannot separate every state: tilting south at
+    one rotation produces almost exactly the field of tilting east at another, and the two
+    sit closer together than either wanders across manufacturing tolerance. A second
+    sensor at a different position sees a different projection of the same array and
+    breaks every such pair. See `FIELD_COLUMNS`.
+
+    Attention: Infineon 3-D sensors are left-handed. Right-handed sensors are chosen here
+    instead, which would need the field z-component flipped (B[2] = -B[2]) to match the
     real part. That flip is not applied anywhere yet.
-
-    (Jack): I think so far we only have data from sensor 1. only initialize this.
     """
-    position = parameters.sensor_position[0]
+    sensors = []
+    for position in parameters.sensor_position:
+        sensor = magpy.Sensor(position=position, handedness="right")
 
-    sensor = magpy.Sensor(position=position, handedness="right")
+        sensor.rotate_from_angax(
+            angle=-45 + parameters.sensor_phi,
+            axis="z",
+            anchor=position,
+            start=0,  # type: ignore
+        )
+        sensor.rotate_from_angax(
+            angle=parameters.sensor_theta,
+            axis="y",
+            anchor=position,
+            start=0,  # type: ignore
+        )
 
-    sensor.rotate_from_angax(
-        angle=-45 + parameters.sensor_phi,
-        axis="z",
-        anchor=position,
-        start=0,  # type: ignore
-    )
-    sensor.rotate_from_angax(
-        angle=parameters.sensor_theta,
-        axis="y",
-        anchor=position,
-        start=0,  # type: ignore
-    )
+        sensors.append(sensor)
 
-    # sensor 2 (parameters.sensor_position[1]) is deliberately still dormant: using it
-    # would double the feature space, and its design positions are not trusted yet
-
-    return sensor
+    return magpy.Collection(*sensors)
 
 
 def make_sensor_readings(
     magnets: magpy.Collection,
-    sensors: magpy.Sensor,
+    sensors: magpy.Collection,
     parameters: Parameters,
     n_steps: int = 24,
 ):
     """
-    Sweep the joystick through every state and read the field at the sensor.
+    Sweep the joystick through every state and read the field at both sensors.
+
+    Returns (5 * n_steps, n_sensors, 3) in tesla.
 
     The path is 5 blocks of `n_steps` rotations: south, north, east, west, ground.
     Each block's tilt is applied to the path from its start index onwards, so the
@@ -195,13 +200,13 @@ def make_dataset(
     params = parameter_factory(generator=generator)
 
     # init joystick simulation
-    sensor = setup_sensor(parameters=params)
+    sensors = setup_sensors(parameters=params)
     magnets = setup_magnets(parameters=params)
 
     # simulate whole sweeep
     B = make_sensor_readings(
         magnets=magnets,
-        sensors=sensor,
+        sensors=sensors,
         parameters=params,
         n_steps=n_steps,
     )
@@ -210,13 +215,10 @@ def make_dataset(
     # (the bit we are trying to predict)
     states, angles = make_positions(n_steps=n_steps)
 
-    dataset = {
-        "Bx": B[:, 0],
-        "By": B[:, 1],
-        "Bz": B[:, 2],
-        "tilt": states,
-        "angle": angles,
-    }
+    # (n, n_sensors, 3) -> one column per sensor axis, in FIELD_COLUMNS order
+    dataset = dict(zip(FIELD_COLUMNS, B.reshape(len(B), -1).T))
+    dataset["tilt"] = states
+    dataset["angle"] = angles
 
     return pd.DataFrame(dataset)
 
@@ -289,7 +291,7 @@ def make_transitions(df: pd.DataFrame, n_steps: int = 24) -> pd.DataFrame:
     )
 
     # look up B by (tilt, angle index) at each end of the transition
-    lut = df[["Bx", "By", "Bz"]].set_axis(
+    lut = df[FIELD_COLUMNS].set_axis(
         pd.MultiIndex.from_arrays(
             [df["tilt"].astype(int), (df["angle"] / step).round().astype(int)]
         )
@@ -305,21 +307,10 @@ def make_transitions(df: pd.DataFrame, n_steps: int = 24) -> pd.DataFrame:
     out["angle_end"] = out["angle_idx_end"] * step
 
     return out[
-        [
-            "Bx_start",
-            "By_start",
-            "Bz_start",
-            "tilt_start",
-            "angle_start",
-            "angle_idx_start",
-            "Bx_end",
-            "By_end",
-            "Bz_end",
-            "tilt_end",
-            "angle_end",
-            "angle_idx_end",
-            "transition",
-        ]
+        [f"{column}_start" for column in FIELD_COLUMNS]
+        + ["tilt_start", "angle_start", "angle_idx_start"]
+        + [f"{column}_end" for column in FIELD_COLUMNS]
+        + ["tilt_end", "angle_end", "angle_idx_end", "transition"]
     ]
 
 
@@ -378,10 +369,11 @@ if __name__ == "__main__":
         magnets = setup_magnets(parameters=params)
         B = make_sensor_readings(
             magnets=magnets,
-            sensors=setup_sensor(parameters=params),
+            sensors=setup_sensors(parameters=params),
             parameters=params,
             n_steps=n,
         )
+        assert B.shape == (5 * n, 2, 3), B.shape
 
         south, north, east, west = params.tilt_angle
 
@@ -457,7 +449,11 @@ if __name__ == "__main__":
 
     # same state graph every unit, but each unit reads a different field
     assert unit_0[graph].equals(unit_1[graph])
-    assert not np.allclose(unit_0["Bx_start"], unit_1["Bx_start"])
+    assert not np.allclose(unit_0["Bx1_start"], unit_1["Bx1_start"])
+
+    # both sensors are wired through, and they see genuinely different fields --
+    # if they did not, sensor 2 would add nothing and the degenerate pairs would remain
+    assert not np.allclose(unit_0["Bx1_start"], unit_0["Bx2_start"])
 
     print(m.shape)
     print("ok")

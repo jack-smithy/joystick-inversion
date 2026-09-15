@@ -1,12 +1,11 @@
 from dataclasses import dataclass
 
 import numpy as np
-import numpy.linalg as LA
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-from constants import TILT_NAMES, mT_TO_T
+from constants import FIELD_COLUMNS, TILT_NAMES, mT_TO_T
 
 
 @dataclass
@@ -19,7 +18,18 @@ class Predictions:
     tilt_pred: np.ndarray
     angle_idx_true: np.ndarray
     angle_idx_pred: np.ndarray
-    angle_error: np.ndarray  # deg, per sample
+    n_steps: int = 24
+
+    @property
+    def angle_error(self) -> np.ndarray:
+        """
+        Per-sample angular error in degrees.
+
+        Quantized: the model picks one of `n_steps` rest positions, so this is the miss
+        distance in degrees and can only take multiples of `360 / n_steps`. It is kept
+        because the per-state spread is the diagnostic that shows the antipodal tail.
+        """
+        return bin_error(self, self.n_steps) * (360 / self.n_steps)
 
 
 def bin_error(predictions: Predictions, n_steps: int = 24) -> np.ndarray:
@@ -30,56 +40,15 @@ def bin_error(predictions: Predictions, n_steps: int = 24) -> np.ndarray:
     return np.minimum(delta, n_steps - delta)
 
 
-def process_angle(y: np.ndarray) -> np.ndarray:
+def state_index(y: torch.Tensor, n_steps: int = 24) -> torch.Tensor:
     """
-    y  -> (sin(y), cos(y))
+    Loader label (angle_idx, tilt) -> the single joint state the model classifies.
+
+    Tilt and rotation are not independent to predict, and there are only
+    `5 * n_steps` = 120 of them, so one softmax over the lot beats two heads that can
+    disagree. Decode with `state // n_steps` and `state % n_steps`.
     """
-    y_rad = np.deg2rad(y)
-    sin_y, cos_y = np.sin(y_rad), np.cos(y_rad)
-    return np.concatenate((sin_y[None], cos_y[None]), axis=0).T
-
-
-def unprocess_angle(y: np.ndarray) -> np.ndarray:
-    """
-    (sin(y), cos(y)) -> y
-    """
-    norm = np.linalg.norm(y, axis=1, keepdims=True)
-    y_normalized = y / np.clip(norm, 1e-8, None)
-    return np.rad2deg(np.arctan2(y_normalized[:, 0], y_normalized[:, 1]))
-
-
-def angle_index(y: np.ndarray, n_steps: int = 24) -> np.ndarray:
-    """
-    (sin(y), cos(y)) -> nearest discrete rotation state
-
-    The joystick only rests at `n_steps` rotations, so a continuous prediction can be
-    snapped back to one. Angles come out of `unprocess_angle` in (-180, 180], hence the
-    modulo, which also handles the wrap either side of 0.
-
-    Args:
-        y (np.ndarray): (n, 2) of (sin, cos). Need not be normalized.
-        n_steps (int, optional): Rotation discretization. Defaults to 24.
-
-    Returns:
-        np.ndarray: (n,) rotation state indices in [0, n_steps).
-    """
-    degrees = unprocess_angle(y)
-    return np.round(degrees / (360 / n_steps)).astype(int) % n_steps
-
-
-def angular_error(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
-    """
-    (sin(y_pred), cos(y_pred)), (sin(y_true), cos(y_true)) -> per-sample dy in degrees
-
-    The mean of this hides a long tail, so the spread is usually the interesting part.
-    """
-    y_true = y_true / LA.norm(y_true, axis=1, keepdims=True)
-    y_pred = y_pred / LA.norm(y_pred, axis=1, keepdims=True)
-
-    dot = np.sum(y_true * y_pred, axis=1)
-    dot = np.clip(dot, -1, 1)
-
-    return np.rad2deg(np.arccos(dot))
+    return y[:, 1] * n_steps + y[:, 0]
 
 
 def make_dataloader(
@@ -104,14 +73,17 @@ def make_dataloader(
         seed (int | None, optional): Seed for that noise. Defaults to None.
 
     Returns:
-        DataLoader: yields X (batch, 2, 3) = (B_start, B_end) in mT,
-            y (batch, 2) = (angle_idx_end, tilt_end) as int64 class labels.
+        DataLoader: yields X (batch, 2, 6) = (B_start, B_end) in mT, each timestep
+            holding both 3-D sensors, y (batch, 2) = (angle_idx_end, tilt_end) as int64
+            class labels.
     """
-    B = df[["Bx_start", "By_start", "Bz_start", "Bx_end", "By_end", "Bz_end"]]
+    B = df[[f"{column}_{when}" for when in ("start", "end") for column in FIELD_COLUMNS]]
 
     # copy=True: pandas hands back negative-stride views that torch rejects
-    # (N, 6) -> (N, 2, 3): one 3-D field reading per timestep
-    X = torch.tensor(B.to_numpy(copy=True), dtype=torch.float32).reshape(-1, 2, 3)
+    # (N, 12) -> (N, 2, 6): both sensors' 3-D readings, per timestep
+    X = torch.tensor(B.to_numpy(copy=True), dtype=torch.float32).reshape(
+        -1, 2, len(FIELD_COLUMNS)
+    )
     X /= mT_TO_T
     y = torch.tensor(
         df[["angle_idx_end", "tilt_end"]].to_numpy(copy=True), dtype=torch.long
@@ -133,17 +105,16 @@ if __name__ == "__main__":
     assert len(loader.dataset) == len(t)  # ty: ignore
 
     X, y = next(iter(loader))
-    assert X.shape == (16, 2, 3) and X.dtype == torch.float32
+    assert X.shape == (16, 2, len(FIELD_COLUMNS)) and X.dtype == torch.float32
     assert y.shape == (16, 2) and y.dtype == torch.long
     assert y[:, 0].max() < 24 and y[:, 1].max() < len(TILT_NAMES)
 
-    # the trajectory really is (B_start, B_end) in mT, in that order
+    # the trajectory really is (B_start, B_end) in mT, in that order, and each timestep
+    # carries both sensors in FIELD_COLUMNS order
     clean = next(iter(make_dataloader(t, batch_size=len(t), shuffle=False)))[0]
-    B_start = t[["Bx_start", "By_start", "Bz_start"]].to_numpy() / mT_TO_T
-    assert np.allclose(clean[:, 0], B_start, atol=1e-6)
-    assert np.allclose(
-        clean[:, 1], t[["Bx_end", "By_end", "Bz_end"]].to_numpy() / mT_TO_T, atol=1e-6
-    )
+    for step, when in enumerate(("start", "end")):
+        want = t[[f"{c}_{when}" for c in FIELD_COLUMNS]].to_numpy() / mT_TO_T
+        assert np.allclose(clean[:, step], want, atol=1e-6), when
 
     # noise is applied on top, at the requested scale
     noisy = next(iter(make_dataloader(t, len(t), shuffle=False, noise=0.1, seed=0)))[0]
@@ -152,11 +123,12 @@ if __name__ == "__main__":
 
     print(X.shape, y.shape)
 
-    # every rest position bins back to itself, and the wrap either side of 0 lands on 0
-    states = np.arange(24)
-    assert np.array_equal(angle_index(process_angle(states * 15.0)), states)
-    assert np.array_equal(angle_index(process_angle(np.array([359.0, 1.0]))), [0, 0])
-    assert np.array_equal(angle_index(process_angle(np.array([352.6, 7.4]))), [0, 0])
-    assert np.array_equal(angle_index(process_angle(np.array([337.6, 22.4]))), [23, 1])
+    # the joint state is a bijection: every (angle, tilt) gets its own class, and
+    # decoding by // and % lands back on the pair it came from
+    all_y = next(iter(make_dataloader(t, batch_size=len(t), shuffle=False)))[1]
+    state = state_index(all_y, n_steps=24)
+    assert state.min() >= 0 and state.max() < 24 * len(TILT_NAMES)
+    assert torch.equal(state // 24, all_y[:, 1]) and torch.equal(state % 24, all_y[:, 0])
+    assert state.unique().numel() == 24 * len(TILT_NAMES)
 
     print("ok")
