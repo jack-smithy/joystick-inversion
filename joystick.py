@@ -131,7 +131,7 @@ def make_sensor_readings(
     angles = np.tile(angles, 5)
 
     # spinny spinny
-    magnets.rotate_from_angax(angle=angles, axis="z", anchor=(0, 0, 0), start=0)
+    magnets.rotate_from_angax(angle=angles, axis="z", anchor=(0, 0, 0), start=0)  # type: ignore
 
     # (block, axis, delta) -> net tilt reached by that block
     tilts = [
@@ -180,8 +180,7 @@ def make_positions(
 
 @timed()
 def make_dataset(
-    n_steps: int = 24,
-    seed: int | None = None,
+    n_steps: int = 24, seed: int | None = None, zero_offset: bool = False
 ) -> pd.DataFrame:
     """
     Create a full training/ validaton data set.
@@ -190,6 +189,10 @@ def make_dataset(
         n_steps (int, optional): Rotation discretization. Defaults to 24.
         seed (int | None, optional): Random seed for tolerances. Defaults to None,
             which gives the nominal joystick with no tolerances applied.
+        zero_offset (bool, optional): Give the unit its own rotational zero reference,
+            a whole number of steps around the circle. The fields are untouched; only
+            the labels roll, so the same reading carries a different angle on every
+            unit. Needs a seed. Defaults to False.
 
     Returns:
         pd.DataFrame: Full simulation dataset
@@ -214,6 +217,16 @@ def make_dataset(
     # get corresponding input states
     # (the bit we are trying to predict)
     states, angles = make_positions(n_steps=n_steps)
+
+    if zero_offset:
+        if generator is None:
+            raise ValueError("Must give a seed for random offset")
+        # A whole number of rotation steps, not degrees: `make_transitions` recovers the
+        # index as round(angle / step), so an off-grid offset rounds the top of the
+        # circle to `n_steps` and never produces index 0 -- every transition touching
+        # that index then joins to NaN fields.
+        offset = generator.integers(n_steps)
+        angles = (angles + offset * 360 / n_steps) % 360
 
     # (n, n_sensors, 3) -> one column per sensor axis, in FIELD_COLUMNS order
     dataset = dict(zip(FIELD_COLUMNS, B.reshape(len(B), -1).T))
@@ -303,6 +316,10 @@ def make_transitions(df: pd.DataFrame, n_steps: int = 24) -> pd.DataFrame:
     out = out.join(lut.add_suffix("_start"), on=["tilt_start", "angle_idx_start"])
     out = out.join(lut.add_suffix("_end"), on=["tilt_end", "angle_idx_end"])
 
+    # a state the lookup could not fill leaves NaN fields, which train to a NaN loss
+    # several minutes later rather than failing here
+    assert not out.isna().any().any(), "unmatched (tilt, angle) in the B lookup"
+
     out["angle_start"] = out["angle_idx_start"] * step
     out["angle_end"] = out["angle_idx_end"] * step
 
@@ -333,6 +350,7 @@ def make_transitions_datasets(
     n_repeats: int,
     seed: int,
     n_steps: int = 24,
+    zero_offset: bool = False,
 ) -> pd.DataFrame:
     """
     `make_datasets` for transitions: one joystick unit per repeat, each with its own
@@ -343,13 +361,15 @@ def make_transitions_datasets(
         n_repeats (int): Number of joystick units to simulate.
         seed (int): Base random seed; unit i uses `seed + i`.
         n_steps (int, optional): Rotation discretization. Defaults to 24.
+        zero_offset (bool, optional): Per-unit rotational zero reference, see
+            `make_dataset`. Defaults to False.
 
     Returns:
         pd.DataFrame: `make_transitions` output stacked over units, plus a `unit` column.
     """
     dfs = []
     for i in range(n_repeats):
-        data = make_dataset(n_steps=n_steps, seed=seed + i)
+        data = make_dataset(n_steps=n_steps, seed=seed + i, zero_offset=zero_offset)
         dfs.append(make_transitions(df=data, n_steps=n_steps).assign(unit=i))
     return pd.concat(dfs, ignore_index=True)
 
@@ -456,4 +476,28 @@ if __name__ == "__main__":
     assert not np.allclose(unit_0["Bx1_start"], unit_0["Bx2_start"])
 
     print(m.shape)
+
+    # A zero offset must be a pure relabelling of the rotation axis: same fields, same
+    # state graph, every index still filled, just rolled by that unit's offset.
+    off = make_transitions(make_dataset(seed=2, zero_offset=True), n_steps=n)
+    plain = make_transitions(make_dataset(seed=2), n_steps=n)
+
+    assert not off.isna().any().any()
+    assert sorted(off["angle_idx_start"].unique()) == list(range(n))
+    assert (off["angle_start"] == off["angle_idx_start"] * 360 / n).all()
+
+    key = ["tilt_start", "angle_idx_start", "transition"]
+    shift = next(
+        k
+        for k in range(n)
+        if np.allclose(
+            off.sort_values(key)["Bx1_start"].to_numpy(),
+            plain.assign(angle_idx_start=(plain["angle_idx_start"] + k) % n)
+            .sort_values(key)["Bx1_start"]
+            .to_numpy(),
+        )
+    )
+    assert shift, "seed 2 should draw a non-zero offset"
+
+    print(f"zero offset: labels rolled by {shift} steps, fields untouched")
     print("ok")

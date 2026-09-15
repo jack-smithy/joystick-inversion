@@ -14,6 +14,7 @@ from train import (
     state_index,
 )
 from utils import timed
+from tqdm import tqdm
 
 SEED = 1
 N_STEPS = 24
@@ -68,13 +69,15 @@ def train(
     loss_fn = nn.CrossEntropyLoss()
 
     model.train()
-    for _ in range(epochs):
-        for X, y in loader:
-            loss = loss_fn(model(X), state_index(y, n_steps=N_STEPS))
+    with tqdm(range(epochs)) as bar:
+        for _ in bar:
+            for X, y in loader:
+                loss = loss_fn(model(X), state_index(y, n_steps=N_STEPS))
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                bar.set_description(f"loss={loss.item()}")
 
     return model
 
@@ -161,12 +164,14 @@ def main() -> None:
         n_repeats=N_UNITS_TRAIN,
         seed=2,
         n_steps=N_STEPS,
+        zero_offset=True,
     )
     # different seeds -> unseen units, so the test set is a generalization check
     df_test = make_transitions_datasets(
         n_repeats=N_UNITS_TEST,
         seed=100,
         n_steps=N_STEPS,
+        zero_offset=True,
     )
 
     torch.manual_seed(SEED)
