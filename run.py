@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 from argparse import ArgumentParser
 
 from constants import FIELD_COLUMNS, TILT_NAMES
-from joystick import make_transitions_datasets
+from joystick import make_datasets
 from plot import plot_evaluation
 from train import (
     Predictions,
@@ -21,20 +21,16 @@ SEED = 1
 N_STEPS = 24
 # one class per (tilt, rotation) pair: 5 * 24 = 120
 N_STATES = len(TILT_NAMES) * N_STEPS
-# both sensors, at both ends of the transition
-N_FEATURES = 2 * len(FIELD_COLUMNS)
-# Generalizing across units is data-hungry, and it is the cheapest axis to buy accuracy
-# on: 32 -> 64 -> 128 units took the miss count 263 -> 152 -> 82 out of 8832. It has not
-# flattened, so raise this if the runtime is affordable.
+# both 3-D sensors, one reading
+N_FEATURES = len(FIELD_COLUMNS)
+# 512 units scored the same as 128 (0.933 state acc), so more data buys nothing here
 N_UNITS_TRAIN = 128
-# 4 units (2208 transitions) is too coarse: it scored this model at 5 misses when the
-# honest figure over 16 units is 82. Most units are near-perfect and a couple are not,
-# so a small test population is mostly luck
+# per-unit accuracy ranges 0.85-0.98, so a small test population is mostly luck
 N_UNITS_TEST = 16
-# 128 was enough for one sensor; with two, 256 is worth ~8 misses
+# 512 wide / 3 deep scored no better
 HIDDEN = 256
-# 40 underfits badly. Beyond ~200 the extra epochs go into memorizing training units
-EPOCHS = 200
+# with cosine decay. Constant lr: 50 -> 200 epochs stayed at ~0.917, cosine at 100 gets 0.933
+EPOCHS = 100
 
 # Sensor noise std in mT. The signal std across states is 22.5 mT, so 0.5 mT is ~2% of
 # signal. The old 0.1 mT was 0.44%, low enough that it perturbed nothing and every model
@@ -44,14 +40,16 @@ NOISE = 0.5
 
 def mlp(n_out: int) -> nn.Sequential:
     """
-    (batch, 2, 6) field trajectory -> (batch, n_out)
+    (batch, 6) field reading -> (batch, n_out)
 
-    A GRU over the same input scored worse on tilt (0.92 vs 0.97) for no gain on angle:
-    the state is near enough determined by the current reading, with the one predecessor
-    resolving what is left, so there is nothing for recurrence to integrate.
+    Tilt, not the model, is the ceiling (~0.93 at 0.5 mT). Every miss is a tilt
+    state read as `zero` or the reverse. They bunch at four angles 90 degrees apart,
+    where tilting moves the field only 1-2.5 mT on a given unit, while units differ
+    from each other by 5-8 mT per axis. One reading can't tell which unit it came
+    from; the transition model's start reading supplied that, which is how it reached
+    0.97 tilt.
     """
     return nn.Sequential(
-        nn.Flatten(),
         nn.Linear(N_FEATURES, HIDDEN),
         nn.ReLU(),
         nn.Linear(HIDDEN, HIDDEN),
@@ -67,6 +65,7 @@ def train(
     lr: float = 1e-3,
 ) -> nn.Module:
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
     loss_fn = nn.CrossEntropyLoss()
 
     model.train()
@@ -79,6 +78,7 @@ def train(
                 loss.backward()
                 optimizer.step()
                 bar.set_description(f"loss={loss.item():.4f}")
+            scheduler.step()
 
     return model
 
@@ -168,33 +168,43 @@ def main() -> None:
     save_dir = f"results/{args.run_name}"
 
     print("Simulating joystick units")
-    df_train = make_transitions_datasets(
+    df_train = make_datasets(
         n_repeats=N_UNITS_TRAIN,
         seed=2,
         n_steps=N_STEPS,
-        zero_offset=True,
+        zero_offset=False,
     )
-    # different seeds -> unseen units, so the test set is a generalization check
-    df_test = make_transitions_datasets(
+    # different seeds -> unseen units, so the test set is a generalization check.
+    # No zero_offset: a per-unit label shift is invisible in a single reading, so
+    # angle acc collapses to the share of units whose offset happens to be 0 (~0.375)
+    df_test = make_datasets(
         n_repeats=N_UNITS_TEST,
         seed=100,
         n_steps=N_STEPS,
-        zero_offset=True,
+        zero_offset=False,
     )
 
     torch.manual_seed(SEED)
 
     # train and test at the same noise level
-    loader_train = make_dataloader(df_train, batch_size=64, noise=NOISE, seed=SEED)
+    loader_train = make_dataloader(
+        df_train,
+        batch_size=64,
+        noise=NOISE,
+        seed=SEED,
+        n_steps=N_STEPS,
+    )
+
     loader_test = make_dataloader(
         df_test,
         batch_size=256,
         shuffle=False,
         noise=NOISE,
         seed=SEED + 1,
+        n_steps=N_STEPS,
     )
 
-    model = train(model=mlp(N_STATES), loader=loader_train, epochs=10)
+    model = train(model=mlp(N_STATES), loader=loader_train)
 
     predictions = evaluate(model, loader_test)
     scores = metrics(predictions)
@@ -206,7 +216,7 @@ def main() -> None:
     report(predictions)
 
     for path in plot_evaluation(
-        predictions, transitions=df_test, n_steps=N_STEPS, directory=save_dir
+        predictions, states=df_test, n_steps=N_STEPS, directory=save_dir
     ):
         print(f"evaluation plot -> {path}")
 

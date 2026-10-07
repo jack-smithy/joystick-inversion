@@ -12,3 +12,4 @@ wheels/
 
 # generated evaluation figures
 plots/
+results/

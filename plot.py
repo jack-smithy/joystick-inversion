@@ -151,15 +151,13 @@ def plot_rotation_confusion(ax: Axes, predictions: Predictions) -> None:
     _style(ax, "Rotation confusion", "read as", "actually")
 
 
-def plot_field_correlation(ax: Axes, transitions: pd.DataFrame) -> None:
+def plot_field_correlation(ax: Axes, states: pd.DataFrame) -> None:
     """
     How much the six input features duplicate each other. Strong off-diagonal
     structure means the network has less to work with than six numbers suggests.
     """
-    columns = [
-        f"{column}_{when}" for when in ("start", "end") for column in FIELD_COLUMNS
-    ]
-    matrix = transitions[columns].corr().to_numpy()
+    columns = FIELD_COLUMNS
+    matrix = states[columns].corr().to_numpy()
 
     image = ax.imshow(matrix, cmap=POLARITY, vmin=-1, vmax=1)
     labels = [c.replace("B", "").replace("_", " ") for c in columns]
@@ -191,7 +189,7 @@ def _save(fig, path: Path) -> Path:
 
 def plot_evaluation(
     predictions: Predictions,
-    transitions: pd.DataFrame,
+    states: pd.DataFrame,
     directory: Path | str = "plots",
     n_steps: int = 24,
 ) -> list[Path]:
@@ -200,7 +198,7 @@ def plot_evaluation(
 
     Args:
         predictions (Predictions): Output of `run.evaluate`.
-        transitions (pd.DataFrame): The test transition table, for the feature
+        states (pd.DataFrame): The test state table, for the feature
             correlation figure.
         directory (Path | str, optional): Written to, created if missing.
         n_steps (int, optional): Rotation discretization. Defaults to 24.
@@ -235,7 +233,7 @@ def plot_evaluation(
     paths.append(_save(fig, directory / "rotation_error.png"))
 
     fig, ax = plt.subplots(figsize=(8, 7), constrained_layout=True)
-    plot_field_correlation(ax, transitions)
+    plot_field_correlation(ax, states)
     paths.append(_save(fig, directory / "correlation.png"))
 
     return paths

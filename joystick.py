@@ -335,15 +335,20 @@ def make_datasets(
     n_repeats: int,
     seed: int,
     n_steps: int = 24,
-):
+    zero_offset: bool = False,
+) -> pd.DataFrame:
+    """
+    One joystick unit per repeat, each with its own tolerances from `seed + i`, so
+    every state appears once per unit with a different field reading.
+
+    Returns:
+        pd.DataFrame: `make_dataset` output stacked over units, plus a `unit` column.
+    """
     dfs = []
     for i in range(n_repeats):
-        data = make_dataset(
-            n_steps=n_steps,
-            seed=seed + i,
-        )
-        dfs.append(data)
-    return pd.concat(dfs)
+        data = make_dataset(n_steps=n_steps, seed=seed + i, zero_offset=zero_offset)
+        dfs.append(data.assign(unit=i))
+    return pd.concat(dfs, ignore_index=True)
 
 
 def make_transitions_datasets(

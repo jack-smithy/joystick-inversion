@@ -57,36 +57,36 @@ def make_dataloader(
     shuffle: bool = True,
     noise: float = 0.0,
     seed: int | None = None,
+    n_steps: int = 24,
 ) -> DataLoader:
     """
-    Torch loader over a transition table from `make_transitions`: predict the state
-    the joystick ends up in from the length-2 field trajectory that got it there.
+    Torch loader over a state table from `make_datasets`: predict the (angle, tilt)
+    state from the single field reading taken in it.
 
     Fields are handed over in mT, which keeps them O(1) for the network.
 
     Args:
-        df (pd.DataFrame): Transition table from `joystick.make_transitions`.
+        df (pd.DataFrame): State table from `joystick.make_datasets`.
         batch_size (int, optional): Defaults to 32.
         shuffle (bool, optional): Defaults to True.
         noise (float, optional): Std of Gaussian sensor noise in mT, drawn once
             per sample (not re-drawn each epoch). Defaults to 0.0.
         seed (int | None, optional): Seed for that noise. Defaults to None.
+        n_steps (int, optional): Rotation discretization. Defaults to 24.
 
     Returns:
-        DataLoader: yields X (batch, 2, 6) = (B_start, B_end) in mT, each timestep
-            holding both 3-D sensors, y (batch, 2) = (angle_idx_end, tilt_end) as int64
-            class labels.
+        DataLoader: yields X (batch, 6) in mT, both 3-D sensors in FIELD_COLUMNS
+            order, y (batch, 2) = (angle_idx, tilt) as int64 class labels.
     """
-    B = df[[f"{column}_{when}" for when in ("start", "end") for column in FIELD_COLUMNS]]
-
     # copy=True: pandas hands back negative-stride views that torch rejects
-    # (N, 12) -> (N, 2, 6): both sensors' 3-D readings, per timestep
-    X = torch.tensor(B.to_numpy(copy=True), dtype=torch.float32).reshape(
-        -1, 2, len(FIELD_COLUMNS)
-    )
+    X = torch.tensor(df[FIELD_COLUMNS].to_numpy(copy=True), dtype=torch.float32)
     X /= mT_TO_T
+
+    # % n_steps: an angle a hair under 360 rounds up to n_steps, which is index 0
+    angle_idx = (df["angle"] / (360 / n_steps)).round().astype(int) % n_steps
     y = torch.tensor(
-        df[["angle_idx_end", "tilt_end"]].to_numpy(copy=True), dtype=torch.long
+        np.stack([angle_idx.to_numpy(), df["tilt"].astype(int).to_numpy()], axis=1),
+        dtype=torch.long,
     )
 
     if noise:
@@ -97,24 +97,21 @@ def make_dataloader(
 
 
 if __name__ == "__main__":
-    from joystick import make_dataset, make_transitions
+    from joystick import make_dataset
 
-    t = make_transitions(make_dataset())
+    t = make_dataset()
     loader = make_dataloader(t, batch_size=16)
 
     assert len(loader.dataset) == len(t)  # ty: ignore
 
     X, y = next(iter(loader))
-    assert X.shape == (16, 2, len(FIELD_COLUMNS)) and X.dtype == torch.float32
+    assert X.shape == (16, len(FIELD_COLUMNS)) and X.dtype == torch.float32
     assert y.shape == (16, 2) and y.dtype == torch.long
     assert y[:, 0].max() < 24 and y[:, 1].max() < len(TILT_NAMES)
 
-    # the trajectory really is (B_start, B_end) in mT, in that order, and each timestep
-    # carries both sensors in FIELD_COLUMNS order
+    # the reading really is the field in mT, in FIELD_COLUMNS order
     clean = next(iter(make_dataloader(t, batch_size=len(t), shuffle=False)))[0]
-    for step, when in enumerate(("start", "end")):
-        want = t[[f"{c}_{when}" for c in FIELD_COLUMNS]].to_numpy() / mT_TO_T
-        assert np.allclose(clean[:, step], want, atol=1e-6), when
+    assert np.allclose(clean, t[FIELD_COLUMNS].to_numpy() / mT_TO_T, atol=1e-6)
 
     # noise is applied on top, at the requested scale
     noisy = next(iter(make_dataloader(t, len(t), shuffle=False, noise=0.1, seed=0)))[0]
