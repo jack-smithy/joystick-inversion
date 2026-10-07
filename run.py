@@ -3,6 +3,7 @@ import torch
 from sklearn.metrics import classification_report
 from torch import nn
 from torch.utils.data import DataLoader
+from argparse import ArgumentParser
 
 from constants import FIELD_COLUMNS, TILT_NAMES
 from joystick import make_transitions_datasets
@@ -77,7 +78,7 @@ def train(
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                bar.set_description(f"loss={loss.item()}")
+                bar.set_description(f"loss={loss.item():.4f}")
 
     return model
 
@@ -159,6 +160,13 @@ def report(predictions: Predictions) -> None:
 
 @timed()
 def main() -> None:
+    parser = ArgumentParser()
+    parser.add_argument("--run-name", type=str, required=True)
+
+    args = parser.parse_args()
+
+    save_dir = f"results/{args.run_name}"
+
     print("Simulating joystick units")
     df_train = make_transitions_datasets(
         n_repeats=N_UNITS_TRAIN,
@@ -186,7 +194,7 @@ def main() -> None:
         seed=SEED + 1,
     )
 
-    model = train(model=mlp(N_STATES), loader=loader_train)
+    model = train(model=mlp(N_STATES), loader=loader_train, epochs=10)
 
     predictions = evaluate(model, loader_test)
     scores = metrics(predictions)
@@ -197,7 +205,9 @@ def main() -> None:
 
     report(predictions)
 
-    for path in plot_evaluation(predictions, transitions=df_test, n_steps=N_STEPS):
+    for path in plot_evaluation(
+        predictions, transitions=df_test, n_steps=N_STEPS, directory=save_dir
+    ):
         print(f"evaluation plot -> {path}")
 
 

@@ -225,7 +225,7 @@ def make_dataset(
         # index as round(angle / step), so an off-grid offset rounds the top of the
         # circle to `n_steps` and never produces index 0 -- every transition touching
         # that index then joins to NaN fields.
-        offset = generator.integers(n_steps)
+        offset = generator.integers(low=-5, high=5)
         angles = (angles + offset * 360 / n_steps) % 360
 
     # (n, n_sensors, 3) -> one column per sensor axis, in FIELD_COLUMNS order
